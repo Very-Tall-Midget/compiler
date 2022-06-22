@@ -1,4 +1,4 @@
-use std::slice::Iter;
+use std::{slice::Iter, rc::Rc};
 
 use super::lexer::*;
 
@@ -78,7 +78,7 @@ impl IntoFunction for Iter<'_, Token> {
 // STATEMENT
 #[derive(Debug)]
 pub struct Statement {
-    pub expr: u32,
+    pub expr: Expr,
 }
 
 trait IntoStatement {
@@ -88,17 +88,50 @@ trait IntoStatement {
 impl IntoStatement for Iter<'_, Token> {
     fn to_statement(&mut self) -> Result<Statement, String> {
         if let Some(Token::Keyword(Keyword::Return)) = self.next() {
-            if let Some(&Token::Integer(expr)) = self.next() {
-                if let Some(Token::Symbol(Symbol::Semicolon)) = self.next() {
-                    Ok(Statement { expr })
-                } else {
-                    Err("Expected ';'".to_string())
-                }
+            let expr = self.to_expr()?;
+            if let Some(Token::Symbol(Symbol::Semicolon)) = self.next() {
+                Ok(Statement { expr })
             } else {
-                Err("Expected integer".to_string())
+                Err("Expected ';'".to_string())
             }
         } else {
             Err("Expected keyword 'return'".to_string())
+        }
+    }
+}
+
+// EXPRESSION
+#[derive(Debug)]
+pub enum Expr {
+    Constant(u32),
+    UnaryOp(UnaryOp, Rc<Expr>),
+}
+
+#[derive(Debug)]
+pub enum UnaryOp {
+    Negation,
+    Complement,
+    Not,
+}
+
+trait IntoExpr {
+    fn to_expr(&mut self) -> Result<Expr, String>;
+}
+
+impl IntoExpr for Iter<'_, Token> {
+    fn to_expr(&mut self) -> Result<Expr, String> {
+        match self.next() {
+            Some(Token::Symbol(s)) => Ok(Expr::UnaryOp(
+                match s {
+                    Symbol::Not => UnaryOp::Not,
+                    Symbol::Complement => UnaryOp::Complement,
+                    Symbol::Negation => UnaryOp::Negation,
+                    _ => return Err("Expected unary operator ('!', '~' or '-') or integer".to_string()),
+                },
+                Rc::new(self.to_expr()?),
+            )),
+            Some(&Token::Integer(i)) => Ok(Expr::Constant(i)),
+            _ => Err("Expected unary operator ('!', '~' or '-') or integer".to_string()),
         }
     }
 }

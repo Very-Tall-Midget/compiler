@@ -117,6 +117,9 @@ pub enum Symbol {
     OpenParen,  // (
     CloseParen, // )
     Semicolon,  // ;
+    Not,        // !
+    Complement, // ~
+    Negation,   // -
 }
 
 trait Symbols {
@@ -131,6 +134,9 @@ impl Symbols for char {
             '(' => Some(Symbol::OpenParen),
             ')' => Some(Symbol::CloseParen),
             ';' => Some(Symbol::Semicolon),
+            '-' => Some(Symbol::Negation),
+            '~' => Some(Symbol::Complement),
+            '!' => Some(Symbol::Not),
             _ => None,
         }
     }
