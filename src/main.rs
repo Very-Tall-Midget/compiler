@@ -32,12 +32,13 @@ fn write_assembly(asm: String) {
 }
 
 fn compile_assembly(out: String) {
-    Command::new("gcc")
+    let res = Command::new("gcc")
         .arg("assembly.s")
         .arg("-o")
         .arg(out)
         .output()
         .expect("Failed to call gcc");
+    println!("{:?}", res);
 }
 
 fn main() -> Result<(), String> {

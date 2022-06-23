@@ -100,18 +100,19 @@ impl IntoStatement for Iter<'_, Token> {
     }
 }
 
-// EXPRESSION
 #[derive(Debug)]
-pub enum Expr {
-    Constant(u32),
-    UnaryOp(UnaryOp, Rc<Expr>),
+pub enum BinaryOp {
+    Addition,
+    Subtraction,
+    Multiply,
+    Divide,
 }
 
+// EXPRESSION
 #[derive(Debug)]
-pub enum UnaryOp {
-    Negation,
-    Complement,
-    Not,
+pub struct Expr {
+    pub term: Term,
+    pub terms: Vec<(BinaryOp, Term)>,
 }
 
 trait IntoExpr {
@@ -120,18 +121,124 @@ trait IntoExpr {
 
 impl IntoExpr for Iter<'_, Token> {
     fn to_expr(&mut self) -> Result<Expr, String> {
-        match self.next() {
-            Some(Token::Symbol(s)) => Ok(Expr::UnaryOp(
+        let mut terms = Vec::new();
+        let term = self.to_term()?;
+        let mut copy = self.clone();
+
+        loop {
+            if let Some(Token::Symbol(s)) = copy.next() {
                 match s {
-                    Symbol::Not => UnaryOp::Not,
-                    Symbol::Complement => UnaryOp::Complement,
-                    Symbol::Negation => UnaryOp::Negation,
-                    _ => return Err("Expected unary operator ('!', '~' or '-') or integer".to_string()),
-                },
-                Rc::new(self.to_expr()?),
-            )),
-            Some(&Token::Integer(i)) => Ok(Expr::Constant(i)),
-            _ => Err("Expected unary operator ('!', '~' or '-') or integer".to_string()),
+                    Symbol::Add => {
+                        self.next();
+                        terms.push((BinaryOp::Addition, self.to_term()?));
+                        copy = self.clone();
+                    }
+                    Symbol::Negation => {
+                        self.next();
+                        terms.push((BinaryOp::Subtraction, self.to_term()?));
+                        copy = self.clone();
+                    }
+                    _ => break
+                }
+            } else {
+                break;
+            }
+        }
+
+        Ok(Expr {
+            term,
+            terms,
+        })
+    }
+}
+
+// TERM
+#[derive(Debug)]
+pub struct Term {
+    pub factor: Factor,
+    pub factors: Vec<(BinaryOp, Factor)>,
+}
+
+trait IntoTerm {
+    fn to_term(&mut self) -> Result<Term, String>;
+}
+
+impl IntoTerm for Iter<'_, Token> {
+    fn to_term(&mut self) -> Result<Term, String> {
+        let mut factors = Vec::new();
+        let factor = self.to_factor()?;
+        let mut copy = self.clone();
+
+        loop {
+            if let Some(Token::Symbol(s)) = copy.next() {
+                match s {
+                    Symbol::Mult => {
+                        self.next();
+                        factors.push((BinaryOp::Multiply, self.to_factor()?));
+                        copy = self.clone();
+                    }
+                    Symbol::Div => {
+                        self.next();
+                        factors.push((BinaryOp::Divide, self.to_factor()?));
+                        copy = self.clone();
+                    }
+                    _ => break
+                }
+            } else {
+                break;
+            }
+        }
+
+        Ok(Term {
+            factor,
+            factors,
+        })
+    }
+}
+
+// FACTOR
+#[derive(Debug)]
+pub enum Factor {
+    Expr(Rc<Expr>),
+    UnaryOp(UnaryOp, Rc<Factor>),
+    Constant(u32),
+}
+
+trait IntoFactor {
+    fn to_factor(&mut self) -> Result<Factor, String>;
+}
+
+impl IntoFactor for Iter<'_, Token> {
+    fn to_factor(&mut self) -> Result<Factor, String> {
+        match self.next() {
+            Some(Token::Symbol(Symbol::OpenParen)) => {
+                let expr = self.to_expr()?;
+                if let Some(Token::Symbol(Symbol::CloseParen)) = self.next() {
+                    Ok(Factor::Expr(Rc::new(expr)))
+                } else {
+                    Err("Expected ')'".to_string())
+                }
+            }
+            Some(Token::Symbol(Symbol::Not)) => {
+                Ok(Factor::UnaryOp(UnaryOp::Not, Rc::new(self.to_factor()?)))
+            }
+            Some(Token::Symbol(Symbol::Complement)) => {
+                Ok(Factor::UnaryOp(UnaryOp::Complement, Rc::new(self.to_factor()?)))
+            }
+            Some(Token::Symbol(Symbol::Negation)) => {
+                Ok(Factor::UnaryOp(UnaryOp::Negation, Rc::new(self.to_factor()?)))
+            }
+            Some(&Token::Integer(i)) => {
+                Ok(Factor::Constant(i))
+            }
+            _ => Err("Expected expr, unary operator or integer".to_string())
         }
     }
+}
+
+#[derive(Debug)]
+pub enum UnaryOp {
+    Negation,
+    Complement,
+    Not,
 }

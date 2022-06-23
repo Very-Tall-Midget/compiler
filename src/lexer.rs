@@ -120,6 +120,9 @@ pub enum Symbol {
     Not,        // !
     Complement, // ~
     Negation,   // -
+    Add,        // +
+    Mult,       // *
+    Div,        // /
 }
 
 trait Symbols {
@@ -137,6 +140,9 @@ impl Symbols for char {
             '-' => Some(Symbol::Negation),
             '~' => Some(Symbol::Complement),
             '!' => Some(Symbol::Not),
+            '+' => Some(Symbol::Add),
+            '*' => Some(Symbol::Mult),
+            '/' => Some(Symbol::Div),
             _ => None,
         }
     }
