@@ -1,7 +1,11 @@
 <program> ::= <function>
-<function> ::= "int" <id> "(" ")" "{" <statement> "}"
-<statement> ::= "return" <expr> ";"
-<expr> ::= <logical-and-expr> { "||" <logical-and-expr> }
+<function> ::= "int" <id> "(" ")" "{" { <statement> } "}"
+<statement> ::= "return" <expr> ";" |
+                | <exp> ";"
+                | "int" <id> [ = <exp>] ";"
+<expr> ::= <id> "=" <expr> | <logical-or-expr>
+<logical-or-expr> ::= <logical-and-expr>
+                    { "||" <logical-and-expr> }
 <logical-and-expr> ::= <bit-or-expr> { "&&" <bit-or-expr> }
 <bit-or-expr> ::= <bit-xor-expr> { "|" <bit-xor-expr> }
 <bit-xor-expr> ::= <bit-and-expr> { "^" <bit-and-expr> }
@@ -13,5 +17,5 @@
 <shift-expr> ::= <additive-expr> { ("<<" | ">>") <additive-expr> }
 <additive-expr> ::= <term> { ("+" | "-") <term> }
 <term> ::= <factor> { ("*" | "/" | "%") <factor> }
-<factor> ::= "(" <expr> ")" | <unary_op> <factor> | <int>
+<factor> ::= "(" <expr> ")" | <unary_op> <factor> | <int> | <id>
 <unary_op> ::= "!" | "~" | "-"

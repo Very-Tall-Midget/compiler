@@ -32,7 +32,7 @@ impl ToTree<Program> for Peekable<Iter<'_, Token>> {
 #[derive(Debug)]
 pub struct Function {
     pub name: String,
-    pub body: Statement,
+    pub body: Vec<Statement>,
 }
 
 impl ToTree<Function> for Peekable<Iter<'_, Token>> {
@@ -43,16 +43,19 @@ impl ToTree<Function> for Peekable<Iter<'_, Token>> {
                 if let Some(Token::Symbol(Symbol::OpenParen)) = self.next() {
                     if let Some(Token::Symbol(Symbol::CloseParen)) = self.next() {
                         if let Some(Token::Symbol(Symbol::OpenBrace)) = self.next() {
-                            let func = Function {
-                                name,
-                                body: self.to_tree()?,
-                            };
+                            let mut body: Vec<Statement> = Vec::new();
 
-                            if let Some(Token::Symbol(Symbol::CloseBrace)) = self.next() {
-                                Ok(func)
-                            } else {
-                                Err("[Parser]: Expected '}'".to_string())
+                            loop {
+                                if let Some(_) =
+                                    self.next_if_eq(&&Token::Symbol(Symbol::CloseBrace))
+                                {
+                                    break;
+                                } else {
+                                    body.push(self.to_tree()?);
+                                }
                             }
+
+                            Ok(Function { name, body })
                         } else {
                             Err("[Parser]: Expected '{'".to_string())
                         }
@@ -73,42 +76,93 @@ impl ToTree<Function> for Peekable<Iter<'_, Token>> {
 
 // STATEMENT
 #[derive(Debug)]
-pub struct Statement {
-    pub expr: Expr,
+pub enum Statement {
+    Return(Expr),
+    Expr(Expr),
+    Declaration(String, Option<Expr>),
 }
 
 impl ToTree<Statement> for Peekable<Iter<'_, Token>> {
     fn to_tree(&mut self) -> Result<Statement, String> {
-        if let Some(Token::Keyword(Keyword::Return)) = self.next() {
+        if let Some(_) = self.next_if_eq(&&Token::Keyword(Keyword::Return)) {
             let expr = self.to_tree()?;
             if let Some(Token::Symbol(Symbol::Semicolon)) = self.next() {
-                Ok(Statement { expr })
+                Ok(Statement::Return(expr))
             } else {
                 Err("[Parser]: Expected ';'".to_string())
             }
+        } else if let Some(_) = self.next_if_eq(&&Token::Keyword(Keyword::Int)) {
+            if let Some(Token::Identifier(id)) = self.next() {
+                if let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::Semicolon)) {
+                    Ok(Statement::Declaration(id.clone(), None))
+                } else if let Some(Token::Symbol(Symbol::Assignment)) = self.next() {
+                    let expr = self.to_tree()?;
+                    if let Some(Token::Symbol(Symbol::Semicolon)) = self.next() {
+                        Ok(Statement::Declaration(id.clone(), Some(expr)))
+                    } else {
+                        Err("[Parser]: Expected ';'".to_string())
+                    }
+                } else {
+                    Err(format!("[Parser]: Expected '=', found '{:?}'", self.next()))
+                }
+            } else {
+                Err("[Parser]: Expected identifier".to_string())
+            }
         } else {
-            Err("[Parser]: Expected keyword 'return'".to_string())
+            let expr = self.to_tree()?;
+            if let Some(Token::Symbol(Symbol::Semicolon)) = self.next() {
+                Ok(Statement::Expr(expr))
+            } else {
+                Err("[Parser]: Expected ';'".to_string())
+            }
         }
     }
 }
 
 // EXPRESSION
 #[derive(Debug)]
-pub struct Expr {
-    pub log_and_expr: LogAndExpr,
-    pub log_and_exprs: Vec<LogAndExpr>,
+pub enum Expr {
+    Assignment(String, Rc<Expr>),
+    LogOrExpr(LogOrExpr),
 }
 
 impl ToTree<Expr> for Peekable<Iter<'_, Token>> {
     fn to_tree(&mut self) -> Result<Expr, String> {
+        let mut copy = self.clone();
+        if let Some(Token::Identifier(id)) = copy.next_if(|&t| match t {
+            Token::Identifier(_) => true,
+            _ => false,
+        }) {
+            if let Some(Token::Symbol(Symbol::Assignment)) = copy.next() {
+                self.next();
+                self.next();
+                Ok(Expr::Assignment(id.clone(), Rc::new(self.to_tree()?)))
+            } else {
+                Ok(Expr::LogOrExpr(self.to_tree()?))
+            }
+        } else {
+            Ok(Expr::LogOrExpr(self.to_tree()?))
+        }
+    }
+}
+
+// LOGICAL OR EXPR
+#[derive(Debug)]
+pub struct LogOrExpr {
+    pub log_and_expr: LogAndExpr,
+    pub log_and_exprs: Vec<LogAndExpr>,
+}
+
+impl ToTree<LogOrExpr> for Peekable<Iter<'_, Token>> {
+    fn to_tree(&mut self) -> Result<LogOrExpr, String> {
         let log_and_expr = self.to_tree()?;
         let mut log_and_exprs = Vec::new();
 
-        while let Some(_) = self.next_if(|&t| t == &Token::Symbol(Symbol::Or)) {
+        while let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::Or)) {
             log_and_exprs.push(self.to_tree()?);
         }
 
-        Ok(Expr {
+        Ok(LogOrExpr {
             log_and_expr,
             log_and_exprs,
         })
@@ -127,7 +181,7 @@ impl ToTree<LogAndExpr> for Peekable<Iter<'_, Token>> {
         let bit_or_expr = self.to_tree()?;
         let mut bit_or_exprs = Vec::new();
 
-        while let Some(_) = self.next_if(|&t| t == &Token::Symbol(Symbol::And)) {
+        while let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::And)) {
             bit_or_exprs.push(self.to_tree()?);
         }
 
@@ -150,7 +204,7 @@ impl ToTree<BitOrExpr> for Peekable<Iter<'_, Token>> {
         let bit_xor_expr = self.to_tree()?;
         let mut bit_xor_exprs = Vec::new();
 
-        while let Some(_) = self.next_if(|&t| t == &Token::Symbol(Symbol::BitOr)) {
+        while let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::BitOr)) {
             bit_xor_exprs.push(self.to_tree()?);
         }
 
@@ -173,7 +227,7 @@ impl ToTree<BitXorExpr> for Peekable<Iter<'_, Token>> {
         let bit_and_expr = self.to_tree()?;
         let mut bit_and_exprs = Vec::new();
 
-        while let Some(_) = self.next_if(|&t| t == &Token::Symbol(Symbol::BitXor)) {
+        while let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::BitXor)) {
             bit_and_exprs.push(self.to_tree()?);
         }
 
@@ -196,7 +250,7 @@ impl ToTree<BitAndExpr> for Peekable<Iter<'_, Token>> {
         let eq_expr = self.to_tree()?;
         let mut eq_exprs = Vec::new();
 
-        while let Some(_) = self.next_if(|&t| t == &Token::Symbol(Symbol::BitAnd)) {
+        while let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::BitAnd)) {
             eq_exprs.push(self.to_tree()?);
         }
 
@@ -401,6 +455,7 @@ pub enum Factor {
     Expr(Rc<Expr>),
     UnaryOp(UnaryOp, Rc<Factor>),
     Constant(u32),
+    Identifier(String),
 }
 
 #[derive(Debug)]
@@ -432,6 +487,7 @@ impl ToTree<Factor> for Peekable<Iter<'_, Token>> {
                 Ok(Factor::UnaryOp(UnaryOp::Negation, Rc::new(self.to_tree()?)))
             }
             Some(&Token::Integer(i)) => Ok(Factor::Constant(i)),
+            Some(Token::Identifier(id)) => Ok(Factor::Identifier(id.clone())),
             _ => Err("[Parser]: Expected expr, unary operator or integer".to_string()),
         }
     }

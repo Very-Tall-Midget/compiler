@@ -1,3 +1,5 @@
 int main() {
-    return 5 ^ 3;
+    int a;
+    a = 1 + 2;
+    return a;
 }

@@ -48,7 +48,7 @@ fn main() -> Result<(), String> {
     //println!("{:?}", res);
     let tree = ast(&res)?;
     //println!("{:#?}", tree);
-    let asm = generate(&tree);
+    let asm = generate(&tree)?;
     println!("{}", asm);
 
     write_assembly(asm);

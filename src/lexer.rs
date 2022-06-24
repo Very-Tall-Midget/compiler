@@ -119,6 +119,7 @@ pub enum Symbol {
     BitOr,      // |
     BitXor,     // ^
     BitAnd,     // &
+    Assignment, // =
 }
 
 trait Symbols {
@@ -164,7 +165,7 @@ impl Symbols for Peekable<Chars<'_>> {
                 if let Some('=') = self.next() {
                     Ok(Symbol::IsEqual)
                 } else {
-                    Err("[Lexer]: Expected '='".to_string())
+                    Ok(Symbol::Assignment)
                 }
             }
             '<' => {
