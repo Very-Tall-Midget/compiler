@@ -79,7 +79,7 @@ impl ToTree<Function> for Peekable<Iter<'_, Token>> {
 pub enum Statement {
     Return(Expr),
     Expr(Expr),
-    Declaration(String, Option<Expr>),
+    Declaration(Vec<(String, Option<Expr>)>),
 }
 
 impl ToTree<Statement> for Peekable<Iter<'_, Token>> {
@@ -92,21 +92,36 @@ impl ToTree<Statement> for Peekable<Iter<'_, Token>> {
                 Err("[Parser]: Expected ';'".to_string())
             }
         } else if let Some(_) = self.next_if_eq(&&Token::Keyword(Keyword::Int)) {
-            if let Some(Token::Identifier(id)) = self.next() {
-                if let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::Semicolon)) {
-                    Ok(Statement::Declaration(id.clone(), None))
-                } else if let Some(Token::Symbol(Symbol::Assignment)) = self.next() {
+            let mut declarations = Vec::new();
+
+            declarations.push(if let Some(Token::Identifier(id)) = self.next() {
+                if let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::Assignment)) {
                     let expr = self.to_tree()?;
-                    if let Some(Token::Symbol(Symbol::Semicolon)) = self.next() {
-                        Ok(Statement::Declaration(id.clone(), Some(expr)))
-                    } else {
-                        Err("[Parser]: Expected ';'".to_string())
-                    }
+                    (id.clone(), Some(expr))
                 } else {
-                    Err(format!("[Parser]: Expected '=', found '{:?}'", self.next()))
+                    (id.clone(), None)
                 }
             } else {
-                Err("[Parser]: Expected identifier".to_string())
+                return Err("[Parser]: Expected identifier".to_string());
+            });
+
+            while let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::Comma)) {
+                declarations.push(if let Some(Token::Identifier(id)) = self.next() {
+                    if let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::Assignment)) {
+                        let expr = self.to_tree()?;
+                        (id.clone(), Some(expr))
+                    } else {
+                        (id.clone(), None)
+                    }
+                } else {
+                    return Err("[Parser]: Expected identifier".to_string());
+                });
+            }
+
+            if let Some(Token::Symbol(Symbol::Semicolon)) = self.next() {
+                Ok(Statement::Declaration(declarations))
+            } else {
+                Err("[Parser]: Expected ';'".to_string())
             }
         } else {
             let expr = self.to_tree()?;

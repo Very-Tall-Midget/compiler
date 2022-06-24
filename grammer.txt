@@ -2,7 +2,7 @@
 <function> ::= "int" <id> "(" ")" "{" { <statement> } "}"
 <statement> ::= "return" <expr> ";" |
                 | <exp> ";"
-                | "int" <id> [ = <exp>] ";"
+                | "int" <id> [ = <exp>] { "," <id> [ = <exp>] } ";"
 <expr> ::= <id> "=" <expr> | <logical-or-expr>
 <logical-or-expr> ::= <logical-and-expr>
                     { "||" <logical-and-expr> }

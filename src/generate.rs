@@ -52,24 +52,26 @@ impl ToAssembly for Statement {
                 Ok(res)
             }
             Statement::Expr(expr) => expr.to_assembly(var_map),
-            Statement::Declaration(id, expr_opt) => {
-                if var_map.contains_key(id) {
-                    Err(format!(
-                        "[Code Generation]: Variable '{}' already exists",
-                        id
-                    ))
-                } else {
-                    let mut res = String::new();
-                    if let Some(expr) = expr_opt {
-                        res.push_str(expr.to_assembly(var_map)?.as_str());
-                        res.push_str("    push %rax\n");
+            Statement::Declaration(declarations) => {
+                let mut res = String::new();
+                for (id, expr_opt) in declarations {
+                    if var_map.contains_key(id) {
+                        return Err(format!(
+                            "[Code Generation]: Variable '{}' already exists",
+                            id
+                        ));
                     } else {
-                        res.push_str("    push $0\n");
+                        if let Some(expr) = expr_opt {
+                            res.push_str(expr.to_assembly(var_map)?.as_str());
+                            res.push_str("    push %rax\n");
+                        } else {
+                            res.push_str("    push $0\n");
+                        }
+                        let stack_index = get_stack_index().fetch_add(-8, Ordering::SeqCst);
+                        var_map.insert(id.clone(), stack_index);
                     }
-                    let stack_index = get_stack_index().fetch_add(-8, Ordering::SeqCst);
-                    var_map.insert(id.clone(), stack_index);
-                    Ok(res)
                 }
+                Ok(res)
             }
         }
     }

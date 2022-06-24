@@ -120,6 +120,7 @@ pub enum Symbol {
     BitXor,     // ^
     BitAnd,     // &
     Assignment, // =
+    Comma,      // ,
 }
 
 trait Symbols {
@@ -187,6 +188,7 @@ impl Symbols for Peekable<Chars<'_>> {
                 }
             }
             '^' => Ok(Symbol::BitXor),
+            ',' => Ok(Symbol::Comma),
             _ => Err("[Lexer]: Unexpected character".to_string()),
         }
     }
