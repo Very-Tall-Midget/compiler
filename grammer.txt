@@ -1,7 +1,17 @@
 <program> ::= <function>
 <function> ::= "int" <id> "(" ")" "{" <statement> "}"
-<statement> ::= "return" <exp> ";"
-<exp> ::= <term> { ("+" | "-") <term> }
-<term> ::= <factor> { ("*" | "/") <factor> }
-<factor> ::= "(" <exp> ")" | <unary_op> <factor> | <int>
+<statement> ::= "return" <expr> ";"
+<expr> ::= <logical-and-expr> { "||" <logical-and-expr> }
+<logical-and-expr> ::= <bit-or-expr> { "&&" <bit-or-expr> }
+<bit-or-expr> ::= <bit-xor-expr> { "|" <bit-xor-expr> }
+<bit-xor-expr> ::= <bit-and-expr> { "^" <bit-and-expr> }
+<bit-and-expr> ::= <equality-expr> { "&" <equality-expr> }
+<equality-expr> ::= <relational-expr>
+                   { ("!=" | "==") <relational-expr> }
+<relational-expr> ::= <shift-expr>
+                     { ("<" | ">" | "<=" | ">=") <shift-expr> }
+<shift-expr> ::= <additive-expr> { ("<<" | ">>") <additive-expr> }
+<additive-expr> ::= <term> { ("+" | "-") <term> }
+<term> ::= <factor> { ("*" | "/" | "%") <factor> }
+<factor> ::= "(" <expr> ")" | <unary_op> <factor> | <int>
 <unary_op> ::= "!" | "~" | "-"

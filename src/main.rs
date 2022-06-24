@@ -44,7 +44,7 @@ fn compile_assembly(out: String) {
 fn main() -> Result<(), String> {
     let (code, out) = get_code_and_out_file()?;
 
-    let res = lex(&code)?;
+    let res = lex(code)?;
     //println!("{:?}", res);
     let tree = ast(&res)?;
     //println!("{:#?}", tree);

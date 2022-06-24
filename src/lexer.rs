@@ -1,80 +1,7 @@
-pub fn lex(code: &str) -> Result<Vec<Token>, String> {
-    let mut out = Vec::new();
-    let mut keyword_or_identifier = false;
-    let mut buffer = String::new();
-    let mut integer = false;
-    let mut integer_buffer: u32 = 0;
+use std::{iter::Peekable, str::Chars};
 
-    for c in code.chars() {
-        if !(c.is_ascii_alphanumeric() || c == '_') {
-            if keyword_or_identifier {
-                if let Some(k) = buffer.to_keyword() {
-                    out.push(Token::Keyword(k));
-                } else {
-                    out.push(Token::Identifier(buffer.clone()));
-                }
-                buffer.clear();
-                keyword_or_identifier = false;
-            }
-
-            if integer {
-                out.push(Token::Integer(integer_buffer));
-                integer = false;
-                integer_buffer = 0;
-            }
-        }
-
-        if c.is_whitespace() {
-            continue;
-        }
-
-        if integer {
-            if !c.is_ascii_digit() {
-                return Err(format!("Expected digit, found '{}'", c));
-            }
-            integer_buffer *= 10;
-            integer_buffer += c.to_digit(10).unwrap();
-            continue;
-        }
-
-        if keyword_or_identifier {
-            if c.is_ascii_alphanumeric() || c == '_' {
-                buffer.push(c);
-            } else {
-                return Err(format!("Invalid character '{}'", c));
-            }
-            continue;
-        }
-
-        if c.is_ascii_digit() {
-            integer = true;
-            integer_buffer *= 10;
-            integer_buffer += c.to_digit(10).unwrap();
-        } else if let Some(s) = c.to_symbol() {
-            out.push(Token::Symbol(s));
-        } else if c.is_ascii_alphanumeric() || c == '_' {
-            keyword_or_identifier = true;
-            buffer.push(c);
-        } else {
-            return Err(format!("Invalid character '{}'", c));
-        }
-    }
-
-    if keyword_or_identifier {
-        if let Some(k) = buffer.to_keyword() {
-            out.push(Token::Keyword(k));
-        } else {
-            out.push(Token::Identifier(buffer.clone()));
-        }
-    }
-
-    if integer {
-        out.push(Token::Integer(integer_buffer));
-    }
-
-    out.push(Token::EOF);
-
-    Ok(out)
+pub fn lex(code: String) -> Result<Vec<Token>, String> {
+    code.chars().peekable().to_tokens()
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -84,6 +11,61 @@ pub enum Token {
     Integer(u32),
     Symbol(Symbol),
     EOF,
+}
+
+trait ToTokens {
+    fn to_tokens(&mut self) -> Result<Vec<Token>, String>;
+}
+
+impl ToTokens for Peekable<Chars<'_>> {
+    fn to_tokens(&mut self) -> Result<Vec<Token>, String> {
+        let mut out = Vec::new();
+
+        loop {
+            if let Some(c) = self.next() {
+                if c.is_whitespace() {
+                    continue;
+                }
+
+                if c.is_ascii_digit() {
+                    let mut i = c.to_digit(10).unwrap();
+                    loop {
+                        if let Some(c) = self.next_if(|&c| c.is_ascii_digit()) {
+                            i *= 10;
+                            i += c.to_digit(10).unwrap();
+                        } else {
+                            break;
+                        }
+                    }
+                    out.push(Token::Integer(i));
+                } else if c.is_ascii_alphanumeric() || c == '_' {
+                    let mut id = String::from(c);
+                    loop {
+                        if let Some(c) = self.next_if(|&c| c.is_ascii_alphanumeric() || c == '_') {
+                            id.push(c);
+                        } else {
+                            break;
+                        }
+                    }
+
+                    if let Some(keyword) = id.to_keyword() {
+                        out.push(Token::Keyword(keyword));
+                    } else {
+                        out.push(Token::Identifier(id));
+                    }
+                } else {
+                    let s = self.to_symbol(c)?;
+                    out.push(Token::Symbol(s));
+                }
+            } else {
+                break;
+            }
+        }
+
+        out.push(Token::EOF);
+
+        Ok(out)
+    }
 }
 
 // KEYWORDS
@@ -123,27 +105,88 @@ pub enum Symbol {
     Add,        // +
     Mult,       // *
     Div,        // /
+    Mod,        // %
+    And,        // &&
+    Or,         // ||
+    IsEqual,    // ==
+    NotEqual,   // !=
+    LT,         // <
+    GT,         // >
+    LTE,        // <=
+    GTE,        // >=
+    ShiftLeft,  // <<
+    ShiftRight, // >>
+    BitOr,      // |
+    BitXor,     // ^
+    BitAnd,     // &
 }
 
 trait Symbols {
-    fn to_symbol(&self) -> Option<Symbol>;
+    fn to_symbol(&mut self, c: char) -> Result<Symbol, String>;
 }
 
-impl Symbols for char {
-    fn to_symbol(&self) -> Option<Symbol> {
-        match &self {
-            '{' => Some(Symbol::OpenBrace),
-            '}' => Some(Symbol::CloseBrace),
-            '(' => Some(Symbol::OpenParen),
-            ')' => Some(Symbol::CloseParen),
-            ';' => Some(Symbol::Semicolon),
-            '-' => Some(Symbol::Negation),
-            '~' => Some(Symbol::Complement),
-            '!' => Some(Symbol::Not),
-            '+' => Some(Symbol::Add),
-            '*' => Some(Symbol::Mult),
-            '/' => Some(Symbol::Div),
-            _ => None,
+impl Symbols for Peekable<Chars<'_>> {
+    fn to_symbol(&mut self, c: char) -> Result<Symbol, String> {
+        match c {
+            '{' => Ok(Symbol::OpenBrace),
+            '}' => Ok(Symbol::CloseBrace),
+            '(' => Ok(Symbol::OpenParen),
+            ')' => Ok(Symbol::CloseParen),
+            ';' => Ok(Symbol::Semicolon),
+            '-' => Ok(Symbol::Negation),
+            '~' => Ok(Symbol::Complement),
+            '!' => {
+                if let Some(_) = self.next_if_eq(&'=') {
+                    Ok(Symbol::NotEqual)
+                } else {
+                    Ok(Symbol::Not)
+                }
+            }
+            '+' => Ok(Symbol::Add),
+            '*' => Ok(Symbol::Mult),
+            '/' => Ok(Symbol::Div),
+            '%' => Ok(Symbol::Mod),
+            '&' => {
+                if let Some('&') = self.next() {
+                    Ok(Symbol::And)
+                } else {
+                    Ok(Symbol::BitAnd)
+                }
+            }
+            '|' => {
+                if let Some('|') = self.next() {
+                    Ok(Symbol::Or)
+                } else {
+                    Ok(Symbol::BitOr)
+                }
+            }
+            '=' => {
+                if let Some('=') = self.next() {
+                    Ok(Symbol::IsEqual)
+                } else {
+                    Err("[Lexer]: Expected '='".to_string())
+                }
+            }
+            '<' => {
+                if let Some(_) = self.next_if_eq(&'=') {
+                    Ok(Symbol::LTE)
+                } else if let Some(_) = self.next_if_eq(&'<') {
+                    Ok(Symbol::ShiftLeft)
+                } else {
+                    Ok(Symbol::LT)
+                }
+            }
+            '>' => {
+                if let Some(_) = self.next_if_eq(&'=') {
+                    Ok(Symbol::GTE)
+                } else if let Some(_) = self.next_if_eq(&'>') {
+                    Ok(Symbol::ShiftRight)
+                } else {
+                    Ok(Symbol::GT)
+                }
+            }
+            '^' => Ok(Symbol::BitXor),
+            _ => Err("[Lexer]: Unexpected character".to_string()),
         }
     }
 }
