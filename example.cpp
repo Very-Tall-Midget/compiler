@@ -1,12 +1,8 @@
 int main() {
     int a = 0;
-    {
-        int b = 1;
-        a = b;
-    }
-    {
-        int b = 2;
-        a = a + b;
-    }
+
+    while (a < 5)
+        a = a + 2;
+
     return a;
 }

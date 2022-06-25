@@ -75,6 +75,11 @@ pub enum Keyword {
     Return,
     If,
     Else,
+    For,
+    While,
+    Do,
+    Break,
+    Continue,
 }
 
 trait Keywords {
@@ -91,6 +96,16 @@ impl Keywords for String {
             Some(Keyword::If)
         } else if self == "else" {
             Some(Keyword::Else)
+        } else if self == "for" {
+            Some(Keyword::For)
+        } else if self == "while" {
+            Some(Keyword::While)
+        } else if self == "do" {
+            Some(Keyword::Do)
+        } else if self == "break" {
+            Some(Keyword::Break)
+        } else if self == "continue" {
+            Some(Keyword::Continue)
         } else {
             None
         }

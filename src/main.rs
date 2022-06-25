@@ -38,7 +38,7 @@ fn compile_assembly(out: String) {
         .arg(out)
         .output()
         .expect("Failed to call gcc");
-    println!("{:?}", res);
+    println!("{}", String::from_utf8(res.stderr).unwrap());
 }
 
 fn main() -> Result<(), String> {

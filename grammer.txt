@@ -2,10 +2,18 @@
 <function> ::= "int" <id> "(" ")" "{" { <block-item> } "}"
 <block-item> ::= <statement> | <declaration>
 <statement> ::= "return" <expr> ";" |
-                | <exp> ";"
-                | "if" "(" <exp> ")" <statement> [ "else" <statement> ]
+                | <expr-opt> ";"
+                | "if" "(" <expr> ")" <statement> [ "else" <statement> ]
                 | "{" { <block-item> } "}"
-<declarations> ::= "int" <id> [ = <exp>] { "," <id> [ = <exp>] } ";"
+                | "for" "(" <expr-opt> ";" <expr-opt> ";" <expr-opt-cp> ")" <statement>
+                | "for" "(" <declarations> <expr-opt> ";" <expr-opt-cp> ")" <statement>
+                | "while" "(" <expr> ")" <statement>
+                | "do" <statement> "while" "(" <expr> ")" ";"
+                | "break" ";"
+                | "continue" ";"
+<declarations> ::= "int" <id> [ = <expr>] { "," <id> [ = <expr>] } ";"
+<expr-opt> ::= <expr> <;> | <;>
+<expr-opt-cp> ::= <expr> <)> | <)>
 <expr> ::= <id> <assignment-op> <expr> | <conditional-expr>
 <conditional-expr> ::= <logical-or-expr> [ "?" <expr> ":" <expr> ]
 <logical-or-expr> ::= <logical-and-expr>

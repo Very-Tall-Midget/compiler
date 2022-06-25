@@ -43,7 +43,10 @@ impl ToTree<Function> for Peekable<Iter<'_, Token>> {
                 if let Some(Token::Symbol(Symbol::OpenParen)) = self.next() {
                     if let Some(Token::Symbol(Symbol::CloseParen)) = self.next() {
                         if let Some(Token::Symbol(Symbol::OpenBrace)) = self.peek() {
-                            Ok(Function { name, body: self.to_tree()? })
+                            Ok(Function {
+                                name,
+                                body: self.to_tree()?,
+                            })
                         } else {
                             Err("[Parser]: Expected '{'".to_string())
                         }
@@ -83,9 +86,15 @@ impl ToTree<BlockItem> for Peekable<Iter<'_, Token>> {
 #[derive(Debug)]
 pub enum Statement {
     Return(Expr),
-    Expr(Expr),
+    Expr(ExprOpt),
     If(Expr, Rc<Statement>, Option<Rc<Statement>>),
     Block(Block),
+    For(ExprOpt, ExprOpt, ExprOpt, Rc<Statement>),
+    ForDecl(Declarations, ExprOpt, ExprOpt, Rc<Statement>),
+    While(Expr, Rc<Statement>),
+    Do(Expr, Rc<Statement>),
+    Break,
+    Continue,
 }
 
 impl ToTree<Statement> for Peekable<Iter<'_, Token>> {
@@ -119,6 +128,90 @@ impl ToTree<Statement> for Peekable<Iter<'_, Token>> {
             }
         } else if let Some(Token::Symbol(Symbol::OpenBrace)) = self.peek() {
             Ok(Statement::Block(self.to_tree()?))
+        } else if let Some(_) = self.next_if_eq(&&Token::Keyword(Keyword::For)) {
+            if let Some(Token::Symbol(Symbol::OpenParen)) = self.next() {
+                if let Some(Token::Keyword(Keyword::Int)) = self.peek() {
+                    let declerations = self.to_tree()?;
+                    let expr1 = self.to_tree()?;
+                    if let Some(Token::Symbol(Symbol::Semicolon)) = self.next() {
+                        let expr2_cp: ExprOptCloseParen = self.to_tree()?;
+                        let expr2 = expr2_cp.to_expr_opt();
+                        if let Some(Token::Symbol(Symbol::CloseParen)) = self.next() {
+                            let statement = Rc::new(self.to_tree()?);
+                            Ok(Statement::ForDecl(declerations, expr1, expr2, statement))
+                        } else {
+                            Err("[Parser]: Expected ')'".to_string())
+                        }
+                    } else {
+                        Err("[Parser]: Expected ';'".to_string())
+                    }
+                } else {
+                    let expr1 = self.to_tree()?;
+                    if let Some(Token::Symbol(Symbol::Semicolon)) = self.next() {
+                        let expr2 = self.to_tree()?;
+                        if let Some(Token::Symbol(Symbol::Semicolon)) = self.next() {
+                            let expr3_cp: ExprOptCloseParen = self.to_tree()?;
+                            let expr3 = expr3_cp.to_expr_opt();
+                            if let Some(Token::Symbol(Symbol::CloseParen)) = self.next() {
+                                let statement = Rc::new(self.to_tree()?);
+                                Ok(Statement::For(expr1, expr2, expr3, statement))
+                            } else {
+                                Err("[Parser]: Expected ')'".to_string())
+                            }
+                        } else {
+                            Err("[Parser]: Expected ';'".to_string())
+                        }
+                    } else {
+                        Err("[Parser]: Expected ';'".to_string())
+                    }
+                }
+            } else {
+                Err("[Parser]: Expected '('".to_string())
+            }
+        } else if let Some(_) = self.next_if_eq(&&Token::Keyword(Keyword::While)) {
+            if let Some(Token::Symbol(Symbol::OpenParen)) = self.next() {
+                let expr = self.to_tree()?;
+                if let Some(Token::Symbol(Symbol::CloseParen)) = self.next() {
+                    let statement = Rc::new(self.to_tree()?);
+                    Ok(Statement::While(expr, statement))
+                } else {
+                    Err("[Parser]: Expected ')'".to_string())
+                }
+            } else {
+                Err("[Parser]: Expected '('".to_string())
+            }
+        } else if let Some(_) = self.next_if_eq(&&Token::Keyword(Keyword::Do)) {
+            let statement = Rc::new(self.to_tree()?);
+            if let Some(Token::Keyword(Keyword::While)) = self.next() {
+                if let Some(Token::Symbol(Symbol::OpenParen)) = self.next() {
+                    let expr = self.to_tree()?;
+                    if let Some(Token::Symbol(Symbol::CloseParen)) = self.next() {
+                        if let Some(Token::Symbol(Symbol::Semicolon)) = self.next() {
+                            Ok(Statement::Do(expr, statement))
+                        } else {
+                            Err("[Parser]: Expected ';'".to_string())
+                        }
+                    } else {
+                        Err("[Parser]: Expected ')'".to_string())
+                    }
+                } else {
+                    Err("[Parser]: Expected '('".to_string())
+                }
+            } else {
+                Err("[Parser]: Expected 'while'".to_string())
+            }
+        } else if let Some(_) = self.next_if_eq(&&Token::Keyword(Keyword::Break)) {
+            if let Some(Token::Symbol(Symbol::Semicolon)) = self.next() {
+                Ok(Statement::Break)
+            } else {
+                Err("[Parser]: Expected ';'".to_string())
+            }
+        } else if let Some(_) = self.next_if_eq(&&Token::Keyword(Keyword::Continue)) {
+            if let Some(Token::Symbol(Symbol::Semicolon)) = self.next() {
+                Ok(Statement::Continue)
+            } else {
+                Err("[Parser]: Expected ';'".to_string())
+            }
         } else {
             let expr = self.to_tree()?;
             if let Some(Token::Symbol(Symbol::Semicolon)) = self.next() {
@@ -142,7 +235,7 @@ impl ToTree<Block> for Peekable<Iter<'_, Token>> {
         if let Some(Token::Symbol(Symbol::OpenBrace)) = self.next() {
             loop {
                 if let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::CloseBrace)) {
-                    break Ok(Block{ items });
+                    break Ok(Block { items });
                 }
                 items.push(self.to_tree()?);
             }
@@ -198,14 +291,54 @@ impl ToTree<Declarations> for Peekable<Iter<'_, Token>> {
     }
 }
 
-// EXPRESSION
+// EXPRESSION OPTIONS
 #[derive(Debug)]
+pub struct ExprOpt {
+    pub expr: Option<Expr>,
+}
+
+impl ToTree<ExprOpt> for Peekable<Iter<'_, Token>> {
+    fn to_tree(&mut self) -> Result<ExprOpt, String> {
+        if let Some(Token::Symbol(Symbol::Semicolon)) = self.peek() {
+            Ok(ExprOpt { expr: None })
+        } else {
+            let expr = self.to_tree()?;
+            Ok(ExprOpt { expr: Some(expr) })
+        }
+    }
+}
+
+// EXPRESSION OPTIONS FOR CLOSE PAREN
+#[derive(Debug)]
+pub struct ExprOptCloseParen {
+    pub expr: Option<Expr>,
+}
+
+impl ToTree<ExprOptCloseParen> for Peekable<Iter<'_, Token>> {
+    fn to_tree(&mut self) -> Result<ExprOptCloseParen, String> {
+        if let Some(Token::Symbol(Symbol::CloseParen)) = self.peek() {
+            Ok(ExprOptCloseParen { expr: None })
+        } else {
+            let expr = self.to_tree()?;
+            Ok(ExprOptCloseParen { expr: Some(expr) })
+        }
+    }
+}
+
+impl ExprOptCloseParen {
+    fn to_expr_opt(&self) -> ExprOpt {
+        ExprOpt { expr: self.expr.clone() }
+    }
+}
+
+// EXPRESSION
+#[derive(Debug, Clone)]
 pub enum Expr {
     Assignment(String, AssignmentOp, Rc<Expr>),
     ConditionalExpr(ConditionalExpr),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum AssignmentOp {
     Assign,
     AddAssign,
@@ -277,7 +410,7 @@ impl ToTree<Expr> for Peekable<Iter<'_, Token>> {
 }
 
 // CONDITIONAL EXPR
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ConditionalExpr {
     pub log_or_expr: LogOrExpr,
     pub options: Option<(Rc<Expr>, Rc<Expr>)>,
@@ -307,7 +440,7 @@ impl ToTree<ConditionalExpr> for Peekable<Iter<'_, Token>> {
 }
 
 // LOGICAL OR EXPR
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LogOrExpr {
     pub log_and_expr: LogAndExpr,
     pub log_and_exprs: Vec<LogAndExpr>,
@@ -330,7 +463,7 @@ impl ToTree<LogOrExpr> for Peekable<Iter<'_, Token>> {
 }
 
 // LOGICAL AND EXPRESSION
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LogAndExpr {
     pub bit_or_expr: BitOrExpr,
     pub bit_or_exprs: Vec<BitOrExpr>,
@@ -353,7 +486,7 @@ impl ToTree<LogAndExpr> for Peekable<Iter<'_, Token>> {
 }
 
 // BIT XOR EXPR
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BitOrExpr {
     pub bit_xor_expr: BitXorExpr,
     pub bit_xor_exprs: Vec<BitXorExpr>,
@@ -376,7 +509,7 @@ impl ToTree<BitOrExpr> for Peekable<Iter<'_, Token>> {
 }
 
 // BIT XOR EXPR
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BitXorExpr {
     pub bit_and_expr: BitAndExpr,
     pub bit_and_exprs: Vec<BitAndExpr>,
@@ -399,7 +532,7 @@ impl ToTree<BitXorExpr> for Peekable<Iter<'_, Token>> {
 }
 
 // BIT AND EXPR
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BitAndExpr {
     pub eq_expr: EqExpr,
     pub eq_exprs: Vec<EqExpr>,
@@ -419,13 +552,13 @@ impl ToTree<BitAndExpr> for Peekable<Iter<'_, Token>> {
 }
 
 // EQUALITY EXPRESSION
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct EqExpr {
     pub rel_expr: RelExpr,
     pub rel_exprs: Vec<(EqOp, RelExpr)>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum EqOp {
     IsEqual,
     NotEqual,
@@ -457,13 +590,13 @@ impl ToTree<EqExpr> for Peekable<Iter<'_, Token>> {
 }
 
 // RELATIONAL EXPRESSION
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RelExpr {
     pub shift_expr: ShiftExpr,
     pub shift_exprs: Vec<(RelOp, ShiftExpr)>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum RelOp {
     LT,
     GT,
@@ -502,13 +635,13 @@ impl ToTree<RelExpr> for Peekable<Iter<'_, Token>> {
 }
 
 // SHIFT EXPRESSION
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ShiftExpr {
     pub add_expr: AddExpr,
     pub add_exprs: Vec<(ShiftOp, AddExpr)>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ShiftOp {
     Left,
     Right,
@@ -540,13 +673,13 @@ impl ToTree<ShiftExpr> for Peekable<Iter<'_, Token>> {
 }
 
 // ADDITIVE EXPRESSION
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct AddExpr {
     pub term: Term,
     pub terms: Vec<(BinaryOp, Term)>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum BinaryOp {
     Addition,
     Subtraction,
@@ -578,7 +711,7 @@ impl ToTree<AddExpr> for Peekable<Iter<'_, Token>> {
 }
 
 // TERM
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Term {
     pub factor: Factor,
     pub factors: Vec<(BinaryOp, Factor)>,
@@ -610,7 +743,7 @@ impl ToTree<Term> for Peekable<Iter<'_, Token>> {
 }
 
 // FACTOR
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Factor {
     Expr(Rc<Expr>),
     UnaryOp(UnaryOp, Rc<Factor>),
@@ -619,13 +752,13 @@ pub enum Factor {
     Prefix(IncDec, String),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum IncDec {
     Incremenet,
     Decrement,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum UnaryOp {
     Negation,
     Complement,
@@ -676,7 +809,7 @@ impl ToTree<Factor> for Peekable<Iter<'_, Token>> {
 }
 
 // POSTFIX ID
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PostfixID {
     pub id: String,
     pub postfix: Option<IncDec>,
