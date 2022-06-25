@@ -121,6 +121,18 @@ pub enum Symbol {
     BitAnd,     // &
     Assignment, // =
     Comma,      // ,
+    Incremenet, // ++
+    Decrement,  // --
+    AddAssign,  // +=
+    SubAssign,  // -=
+    MultAssign, // *=
+    DivAssign,  // /=
+    ModAssign,  // %=
+    SLAssign,   // <<=
+    SRAssign,   // >>=
+    BAndAssign, // &=
+    BXorAssign, // ^=
+    BOrAssign,  // |=
 }
 
 trait Symbols {
@@ -135,7 +147,15 @@ impl Symbols for Peekable<Chars<'_>> {
             '(' => Ok(Symbol::OpenParen),
             ')' => Ok(Symbol::CloseParen),
             ';' => Ok(Symbol::Semicolon),
-            '-' => Ok(Symbol::Negation),
+            '-' => {
+                if let Some(_) = self.next_if_eq(&'-') {
+                    Ok(Symbol::Decrement)
+                } else if let Some(_) = self.next_if_eq(&'=') {
+                    Ok(Symbol::SubAssign)
+                } else {
+                    Ok(Symbol::Negation)
+                }
+            }
             '~' => Ok(Symbol::Complement),
             '!' => {
                 if let Some(_) = self.next_if_eq(&'=') {
@@ -144,26 +164,60 @@ impl Symbols for Peekable<Chars<'_>> {
                     Ok(Symbol::Not)
                 }
             }
-            '+' => Ok(Symbol::Add),
-            '*' => Ok(Symbol::Mult),
-            '/' => Ok(Symbol::Div),
-            '%' => Ok(Symbol::Mod),
+            '+' => {
+                if let Some(_) = self.next_if_eq(&'+') {
+                    Ok(Symbol::Incremenet)
+                } else if let Some(_) = self.next_if_eq(&'=') {
+                    Ok(Symbol::AddAssign)
+                } else {
+                    Ok(Symbol::Add)
+                }
+            }
+            '*' => {
+                if let Some(_) = self.next_if_eq(&'=') {
+                    Ok(Symbol::MultAssign)
+                } else {
+                    Ok(Symbol::Mult)
+                }
+            }
+            '/' => {
+                if let Some(_) = self.next_if_eq(&'=') {
+                    Ok(Symbol::DivAssign)
+                } else {
+                    Ok(Symbol::Div)
+                }
+            }
+            '%' => {
+                if let Some(_) = self.next_if_eq(&'=') {
+                    Ok(Symbol::ModAssign)
+                } else {
+                    Ok(Symbol::Mod)
+                }
+            }
             '&' => {
-                if let Some('&') = self.next() {
+                if let Some(_) = self.next_if_eq(&'&') {
                     Ok(Symbol::And)
                 } else {
-                    Ok(Symbol::BitAnd)
+                    if let Some(_) = self.next_if_eq(&'=') {
+                        Ok(Symbol::BAndAssign)
+                    } else {
+                        Ok(Symbol::BitAnd)
+                    }
                 }
             }
             '|' => {
-                if let Some('|') = self.next() {
+                if let Some(_) = self.next_if_eq(&'|') {
                     Ok(Symbol::Or)
                 } else {
-                    Ok(Symbol::BitOr)
+                    if let Some(_) = self.next_if_eq(&'=') {
+                        Ok(Symbol::BOrAssign)
+                    } else {
+                        Ok(Symbol::BitOr)
+                    }
                 }
             }
             '=' => {
-                if let Some('=') = self.next() {
+                if let Some(_) = self.next_if_eq(&'=') {
                     Ok(Symbol::IsEqual)
                 } else {
                     Ok(Symbol::Assignment)
@@ -173,7 +227,11 @@ impl Symbols for Peekable<Chars<'_>> {
                 if let Some(_) = self.next_if_eq(&'=') {
                     Ok(Symbol::LTE)
                 } else if let Some(_) = self.next_if_eq(&'<') {
-                    Ok(Symbol::ShiftLeft)
+                    if let Some(_) = self.next_if_eq(&'=') {
+                        Ok(Symbol::SLAssign)
+                    } else {
+                        Ok(Symbol::ShiftLeft)
+                    }
                 } else {
                     Ok(Symbol::LT)
                 }
@@ -182,12 +240,22 @@ impl Symbols for Peekable<Chars<'_>> {
                 if let Some(_) = self.next_if_eq(&'=') {
                     Ok(Symbol::GTE)
                 } else if let Some(_) = self.next_if_eq(&'>') {
-                    Ok(Symbol::ShiftRight)
+                    if let Some(_) = self.next_if_eq(&'=') {
+                        Ok(Symbol::SRAssign)
+                    } else {
+                        Ok(Symbol::ShiftRight)
+                    }
                 } else {
                     Ok(Symbol::GT)
                 }
             }
-            '^' => Ok(Symbol::BitXor),
+            '^' => {
+                if let Some(_) = self.next_if_eq(&'=') {
+                    Ok(Symbol::BXorAssign)
+                } else {
+                    Ok(Symbol::BitXor)
+                }
+            }
             ',' => Ok(Symbol::Comma),
             _ => Err("[Lexer]: Unexpected character".to_string()),
         }

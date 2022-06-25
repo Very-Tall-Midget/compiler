@@ -3,7 +3,7 @@
 <statement> ::= "return" <expr> ";" |
                 | <exp> ";"
                 | "int" <id> [ = <exp>] { "," <id> [ = <exp>] } ";"
-<expr> ::= <id> "=" <expr> | <logical-or-expr>
+<expr> ::= <id> <assignment-op> <expr> | <logical-or-expr>
 <logical-or-expr> ::= <logical-and-expr>
                     { "||" <logical-and-expr> }
 <logical-and-expr> ::= <bit-or-expr> { "&&" <bit-or-expr> }
@@ -17,5 +17,7 @@
 <shift-expr> ::= <additive-expr> { ("<<" | ">>") <additive-expr> }
 <additive-expr> ::= <term> { ("+" | "-") <term> }
 <term> ::= <factor> { ("*" | "/" | "%") <factor> }
-<factor> ::= "(" <expr> ")" | <unary_op> <factor> | <int> | <id>
-<unary_op> ::= "!" | "~" | "-"
+<factor> ::= "(" <expr> ")" | <unary-op> <factor> | <int> | [ "++" | "--" ] <id> | <postfix-id>
+<postfix-id> ::= <id> [ "++" | "--" ]
+<unary-op> ::= "!" | "~" | "-"
+<assignment-op> ::= "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "<<=" | ">>=" | "&=" | "|=" | "^="

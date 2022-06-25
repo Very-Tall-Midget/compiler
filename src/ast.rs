@@ -137,8 +137,23 @@ impl ToTree<Statement> for Peekable<Iter<'_, Token>> {
 // EXPRESSION
 #[derive(Debug)]
 pub enum Expr {
-    Assignment(String, Rc<Expr>),
+    Assignment(String, AssignmentOp, Rc<Expr>),
     LogOrExpr(LogOrExpr),
+}
+
+#[derive(Debug)]
+pub enum AssignmentOp {
+    Assign,
+    AddAssign,
+    SubAssign,
+    MultAssign,
+    DivAssign,
+    ModAssign,
+    SLAssign,
+    SRAssign,
+    BAndAssign,
+    BXorAssign,
+    BOrAssign,
 }
 
 impl ToTree<Expr> for Peekable<Iter<'_, Token>> {
@@ -148,10 +163,46 @@ impl ToTree<Expr> for Peekable<Iter<'_, Token>> {
             Token::Identifier(_) => true,
             _ => false,
         }) {
-            if let Some(Token::Symbol(Symbol::Assignment)) = copy.next() {
+            if let Some(Token::Symbol(s)) = copy.next_if(|&t| {
+                if let Token::Symbol(s) = t {
+                    match s {
+                        Symbol::Assignment => true,
+                        Symbol::AddAssign => true,
+                        Symbol::SubAssign => true,
+                        Symbol::MultAssign => true,
+                        Symbol::DivAssign => true,
+                        Symbol::ModAssign => true,
+                        Symbol::SLAssign => true,
+                        Symbol::SRAssign => true,
+                        Symbol::BAndAssign => true,
+                        Symbol::BXorAssign => true,
+                        Symbol::BOrAssign => true,
+                        _ => false,
+                    }
+                } else {
+                    false
+                }
+            }) {
                 self.next();
                 self.next();
-                Ok(Expr::Assignment(id.clone(), Rc::new(self.to_tree()?)))
+                Ok(Expr::Assignment(
+                    id.clone(),
+                    match s {
+                        Symbol::Assignment => AssignmentOp::Assign,
+                        Symbol::AddAssign => AssignmentOp::AddAssign,
+                        Symbol::SubAssign => AssignmentOp::SubAssign,
+                        Symbol::MultAssign => AssignmentOp::MultAssign,
+                        Symbol::DivAssign => AssignmentOp::DivAssign,
+                        Symbol::ModAssign => AssignmentOp::ModAssign,
+                        Symbol::SLAssign => AssignmentOp::SLAssign,
+                        Symbol::SRAssign => AssignmentOp::SRAssign,
+                        Symbol::BAndAssign => AssignmentOp::BAndAssign,
+                        Symbol::BXorAssign => AssignmentOp::BXorAssign,
+                        Symbol::BOrAssign => AssignmentOp::BOrAssign,
+                        _ => unreachable!(),
+                    },
+                    Rc::new(self.to_tree()?),
+                ))
             } else {
                 Ok(Expr::LogOrExpr(self.to_tree()?))
             }
@@ -470,7 +521,14 @@ pub enum Factor {
     Expr(Rc<Expr>),
     UnaryOp(UnaryOp, Rc<Factor>),
     Constant(u32),
-    Identifier(String),
+    Identifier(PostfixID),
+    Prefix(IncDec, String),
+}
+
+#[derive(Debug)]
+pub enum IncDec {
+    Incremenet,
+    Decrement,
 }
 
 #[derive(Debug)]
@@ -482,27 +540,77 @@ pub enum UnaryOp {
 
 impl ToTree<Factor> for Peekable<Iter<'_, Token>> {
     fn to_tree(&mut self) -> Result<Factor, String> {
-        match self.next() {
-            Some(Token::Symbol(Symbol::OpenParen)) => {
-                let expr = self.to_tree()?;
-                if let Some(Token::Symbol(Symbol::CloseParen)) = self.next() {
-                    Ok(Factor::Expr(Rc::new(expr)))
-                } else {
-                    Err("[Parser]: Expected ')'".to_string())
-                }
+        if let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::OpenParen)) {
+            let expr = self.to_tree()?;
+            if let Some(Token::Symbol(Symbol::CloseParen)) = self.next() {
+                Ok(Factor::Expr(Rc::new(expr)))
+            } else {
+                Err("[Parser]: Expected ')'".to_string())
             }
-            Some(Token::Symbol(Symbol::Not)) => {
-                Ok(Factor::UnaryOp(UnaryOp::Not, Rc::new(self.to_tree()?)))
-            }
-            Some(Token::Symbol(Symbol::Complement)) => Ok(Factor::UnaryOp(
+        } else if let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::Not)) {
+            Ok(Factor::UnaryOp(UnaryOp::Not, Rc::new(self.to_tree()?)))
+        } else if let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::Complement)) {
+            Ok(Factor::UnaryOp(
                 UnaryOp::Complement,
                 Rc::new(self.to_tree()?),
-            )),
-            Some(Token::Symbol(Symbol::Negation)) => {
-                Ok(Factor::UnaryOp(UnaryOp::Negation, Rc::new(self.to_tree()?)))
+            ))
+        } else if let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::Negation)) {
+            Ok(Factor::UnaryOp(UnaryOp::Negation, Rc::new(self.to_tree()?)))
+        } else if let Some(&Token::Integer(i)) = self.next_if(|&t| match t {
+            Token::Integer(_) => true,
+            _ => false,
+        }) {
+            Ok(Factor::Constant(i))
+        } else if let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::Incremenet)) {
+            if let Some(Token::Identifier(id)) = self.next() {
+                Ok(Factor::Prefix(IncDec::Incremenet, id.clone()))
+            } else {
+                Err("Expected identifier".to_string())
             }
-            Some(&Token::Integer(i)) => Ok(Factor::Constant(i)),
-            Some(Token::Identifier(id)) => Ok(Factor::Identifier(id.clone())),
+        } else if let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::Decrement)) {
+            if let Some(Token::Identifier(id)) = self.next() {
+                Ok(Factor::Prefix(IncDec::Decrement, id.clone()))
+            } else {
+                Err("Expected identifier".to_string())
+            }
+        } else if let Some(Token::Identifier(_)) = self.peek() {
+            Ok(Factor::Identifier(self.to_tree()?))
+        } else {
+            Err("[Parser]: Expected expr, unary operator or integer".to_string())
+        }
+    }
+}
+
+// POSTFIX ID
+#[derive(Debug)]
+pub struct PostfixID {
+    pub id: String,
+    pub postfix: Option<IncDec>,
+}
+
+impl ToTree<PostfixID> for Peekable<Iter<'_, Token>> {
+    fn to_tree(&mut self) -> Result<PostfixID, String> {
+        match self.next() {
+            Some(Token::Identifier(id)) => {
+                if let Some(Token::Symbol(s)) = self.next_if(|&t| {
+                    t == &Token::Symbol(Symbol::Incremenet)
+                        || t == &Token::Symbol(Symbol::Decrement)
+                }) {
+                    Ok(PostfixID {
+                        id: id.clone(),
+                        postfix: Some(match s {
+                            Symbol::Incremenet => IncDec::Incremenet,
+                            Symbol::Decrement => IncDec::Decrement,
+                            _ => unreachable!(),
+                        }),
+                    })
+                } else {
+                    Ok(PostfixID {
+                        id: id.clone(),
+                        postfix: None,
+                    })
+                }
+            }
             _ => Err("[Parser]: Expected expr, unary operator or integer".to_string()),
         }
     }

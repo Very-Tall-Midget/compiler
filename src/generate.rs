@@ -80,9 +80,23 @@ impl ToAssembly for Statement {
 impl ToAssembly for Expr {
     fn to_assembly(&self, var_map: &mut HashMap<String, isize>) -> Result<String, String> {
         match self {
-            Expr::Assignment(id, expr) => {
+            Expr::Assignment(id, assign_op, expr) => {
                 let mut res = expr.to_assembly(var_map)?;
                 if let Some(offset) = var_map.get(id) {
+                    match assign_op {
+                        AssignmentOp::Assign => {}
+                        AssignmentOp::AddAssign => res.push_str(format!("    mov {0}(%rbp), %rcx\n    add %rcx, %rax\n", offset).as_str()),
+                        AssignmentOp::SubAssign => res.push_str(format!("    mov %rax, %rcx\n    mov {0}(%rbp), %rax\n    sub %rcx, %rax\n", offset).as_str()),
+                        AssignmentOp::MultAssign => res.push_str(format!("    mov {0}(%rbp), %rcx\n    imul %rcx, %rax\n", offset).as_str()),
+                        AssignmentOp::DivAssign => res.push_str(format!("    mov %rax, %rcx\n    mov {0}(%rbp), %rax\n    cqo\n    idiv %rcx\n", offset).as_str()),
+                        AssignmentOp::ModAssign => res.push_str(format!("    mov %rax, %rcx\n    mov {0}(%rbp), %rax\n    cqo\n    idiv %rcx\n    mov %rdx, %rax\n", offset).as_str()),
+                        AssignmentOp::SLAssign => res.push_str(format!("    mov %rax, %rcx\n    mov {0}(%rbp), %rax\n    shl %cl, %rax\n", offset).as_str()),
+                        AssignmentOp::SRAssign => res.push_str(format!("    mov %rax, %rcx\n    mov {0}(%rbp), %rax\n    shr %cl, %rax\n", offset).as_str()),
+                        AssignmentOp::BAndAssign => res.push_str(format!("    mov {0}(%rbp), %rcx\n    and %rcx, %rax\n", offset).as_str()),
+                        AssignmentOp::BXorAssign => res.push_str(format!("    mov {0}(%rbp), %rcx\n    xor %rcx, %rax\n", offset).as_str()),
+                        AssignmentOp::BOrAssign => res.push_str(format!("    mov {0}(%rbp), %rcx\n    or %rcx, %rax\n", offset).as_str()),
+                    }
+
                     res.push_str(format!("    mov %rax, {}(%rbp)\n", offset).as_str());
                     Ok(res)
                 } else {
@@ -309,13 +323,45 @@ impl ToAssembly for Factor {
                 Ok(res)
             }
             Factor::Constant(i) => Ok(format!("    mov ${}, %rax\n", i)),
-            Factor::Identifier(id) => {
+            Factor::Identifier(postfix_id) => postfix_id.to_assembly(var_map),
+            Factor::Prefix(inc_dec, id) => {
                 if let Some(offset) = var_map.get(id) {
-                    Ok(format!("    mov {}(%rbp), %rax\n", offset))
+                    Ok(format!(
+                        "    {1} {0}(%rbp)\n    mov {0}(%rbp), %rax\n",
+                        offset,
+                        match inc_dec {
+                            IncDec::Incremenet => "incq",
+                            IncDec::Decrement => "decq",
+                        }
+                    ))
                 } else {
                     Err(format!("[Code Generation]: Undeclared variable '{}'", id))
                 }
             }
+        }
+    }
+}
+
+impl ToAssembly for PostfixID {
+    fn to_assembly(&self, var_map: &mut HashMap<String, isize>) -> Result<String, String> {
+        if let Some(offset) = var_map.get(&self.id) {
+            if let Some(p) = &self.postfix {
+                Ok(format!(
+                    "    mov {0}(%rbp), %rax\n    {1} {0}(%rbp)\n",
+                    offset,
+                    match p {
+                        IncDec::Incremenet => "incq",
+                        IncDec::Decrement => "decq",
+                    }
+                ))
+            } else {
+                Ok(format!("    mov {}(%rbp), %rax\n", offset))
+            }
+        } else {
+            Err(format!(
+                "[Code Generation]: Undeclared variable '{}'",
+                self.id
+            ))
         }
     }
 }
