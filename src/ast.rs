@@ -32,7 +32,7 @@ impl ToTree<Program> for Peekable<Iter<'_, Token>> {
 #[derive(Debug)]
 pub struct Function {
     pub name: String,
-    pub body: Vec<BlockItem>,
+    pub body: Block,
 }
 
 impl ToTree<Function> for Peekable<Iter<'_, Token>> {
@@ -42,20 +42,8 @@ impl ToTree<Function> for Peekable<Iter<'_, Token>> {
                 let name = i.clone();
                 if let Some(Token::Symbol(Symbol::OpenParen)) = self.next() {
                     if let Some(Token::Symbol(Symbol::CloseParen)) = self.next() {
-                        if let Some(Token::Symbol(Symbol::OpenBrace)) = self.next() {
-                            let mut body: Vec<BlockItem> = Vec::new();
-
-                            loop {
-                                if let Some(_) =
-                                    self.next_if_eq(&&Token::Symbol(Symbol::CloseBrace))
-                                {
-                                    break;
-                                } else {
-                                    body.push(self.to_tree()?);
-                                }
-                            }
-
-                            Ok(Function { name, body })
+                        if let Some(Token::Symbol(Symbol::OpenBrace)) = self.peek() {
+                            Ok(Function { name, body: self.to_tree()? })
                         } else {
                             Err("[Parser]: Expected '{'".to_string())
                         }
@@ -97,6 +85,7 @@ pub enum Statement {
     Return(Expr),
     Expr(Expr),
     If(Expr, Rc<Statement>, Option<Rc<Statement>>),
+    Block(Block),
 }
 
 impl ToTree<Statement> for Peekable<Iter<'_, Token>> {
@@ -128,6 +117,8 @@ impl ToTree<Statement> for Peekable<Iter<'_, Token>> {
             } else {
                 Err("[Parser]: Expected '('".to_string())
             }
+        } else if let Some(Token::Symbol(Symbol::OpenBrace)) = self.peek() {
+            Ok(Statement::Block(self.to_tree()?))
         } else {
             let expr = self.to_tree()?;
             if let Some(Token::Symbol(Symbol::Semicolon)) = self.next() {
@@ -135,6 +126,28 @@ impl ToTree<Statement> for Peekable<Iter<'_, Token>> {
             } else {
                 Err("[Parser]: Expected ';'".to_string())
             }
+        }
+    }
+}
+
+// BLOCK
+#[derive(Debug)]
+pub struct Block {
+    pub items: Vec<BlockItem>,
+}
+
+impl ToTree<Block> for Peekable<Iter<'_, Token>> {
+    fn to_tree(&mut self) -> Result<Block, String> {
+        let mut items = Vec::new();
+        if let Some(Token::Symbol(Symbol::OpenBrace)) = self.next() {
+            loop {
+                if let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::CloseBrace)) {
+                    break Ok(Block{ items });
+                }
+                items.push(self.to_tree()?);
+            }
+        } else {
+            unreachable!()
         }
     }
 }
