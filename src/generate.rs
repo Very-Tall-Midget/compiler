@@ -31,14 +31,23 @@ impl ToAssembly for Function {
     fn to_assembly(&self, var_map: &mut HashMap<String, isize>) -> Result<String, String> {
         let mut res = format!("{}:\n    push %rbp\n    mov %rsp, %rbp\n", self.name);
         get_stack_index().store(-8, Ordering::SeqCst);
-        for expr in &self.body {
-            res.push_str(expr.to_assembly(var_map)?.as_str());
+        for block_item in &self.body {
+            res.push_str(block_item.to_assembly(var_map)?.as_str());
         }
-        if let Some(Statement::Return(_)) = self.body.last() {
+        if let Some(BlockItem::Statement(Statement::Return(_))) = self.body.last() {
             Ok(res)
         } else {
             res.push_str("    mov $0, %rax\n    mov %rbp, %rsp\n    pop %rbp\n    ret\n");
             Ok(res)
+        }
+    }
+}
+
+impl ToAssembly for BlockItem {
+    fn to_assembly(&self, var_map: &mut HashMap<String, isize>) -> Result<String, String> {
+        match self {
+            BlockItem::Statement(s) => s.to_assembly(var_map),
+            BlockItem::Declaration(d) => d.to_assembly(var_map),
         }
     }
 }
@@ -52,28 +61,50 @@ impl ToAssembly for Statement {
                 Ok(res)
             }
             Statement::Expr(expr) => expr.to_assembly(var_map),
-            Statement::Declaration(declarations) => {
-                let mut res = String::new();
-                for (id, expr_opt) in declarations {
-                    if var_map.contains_key(id) {
-                        return Err(format!(
-                            "[Code Generation]: Variable '{}' already exists",
-                            id
-                        ));
-                    } else {
-                        if let Some(expr) = expr_opt {
-                            res.push_str(expr.to_assembly(var_map)?.as_str());
-                            res.push_str("    push %rax\n");
-                        } else {
-                            res.push_str("    push $0\n");
-                        }
-                        let stack_index = get_stack_index().fetch_add(-8, Ordering::SeqCst);
-                        var_map.insert(id.clone(), stack_index);
-                    }
+            Statement::If(expr1, statement1, statement2_opt) => {
+                let mut res = expr1.to_assembly(var_map)?;
+                if let Some(statement2) = statement2_opt {
+                    let int = get_label();
+                    let end = get_label();
+                    res.push_str(format!("    cmp $0, %rax\n    je {}\n", int).as_str());
+                    res.push_str(statement1.to_assembly(var_map)?.as_str());
+                    res.push_str(format!("    jmp {}\n{}:\n", end, int).as_str());
+                    res.push_str(statement2.to_assembly(var_map)?.as_str());
+                    res.push_str(format!("{}:\n", end).as_str());
+                } else {
+                    let end = get_label();
+                    res.push_str(format!("    cmp $0, %rax\n    je {}\n", end).as_str());
+                    res.push_str(statement1.to_assembly(var_map)?.as_str());
+                    res.push_str(format!("{}:\n", end).as_str());
                 }
+
                 Ok(res)
             }
         }
+    }
+}
+
+impl ToAssembly for Declarations {
+    fn to_assembly(&self, var_map: &mut HashMap<String, isize>) -> Result<String, String> {
+        let mut res = String::new();
+        for (id, expr_opt) in &self.declarations {
+            if var_map.contains_key(id) {
+                return Err(format!(
+                    "[Code Generation]: Variable '{}' already exists",
+                    id
+                ));
+            } else {
+                if let Some(expr) = expr_opt {
+                    res.push_str(expr.to_assembly(var_map)?.as_str());
+                    res.push_str("    push %rax\n");
+                } else {
+                    res.push_str("    push $0\n");
+                }
+                let stack_index = get_stack_index().fetch_add(-8, Ordering::SeqCst);
+                var_map.insert(id.clone(), stack_index);
+            }
+        }
+        Ok(res)
     }
 }
 
@@ -103,8 +134,25 @@ impl ToAssembly for Expr {
                     Err(format!("[Code Generation]: Undeclared variable '{}'", id))
                 }
             }
-            Expr::LogOrExpr(loe) => loe.to_assembly(var_map),
+            Expr::ConditionalExpr(ce) => ce.to_assembly(var_map),
         }
+    }
+}
+
+impl ToAssembly for ConditionalExpr {
+    fn to_assembly(&self, var_map: &mut HashMap<String, isize>) -> Result<String, String> {
+        let mut res = self.log_or_expr.to_assembly(var_map)?;
+        if let Some((expr1, expr2)) = &self.options {
+            let int = get_label();
+            let end = get_label();
+            res.push_str(format!("    cmp $0, %rax\n    je {}\n", int).as_str());
+            res.push_str(expr1.to_assembly(var_map)?.as_str());
+            res.push_str(format!("    jmp {}\n{}:\n", end, int).as_str());
+            res.push_str(expr2.to_assembly(var_map)?.as_str());
+            res.push_str(format!("{}:\n", end).as_str());
+        }
+
+        Ok(res)
     }
 }
 

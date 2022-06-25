@@ -32,7 +32,7 @@ impl ToTree<Program> for Peekable<Iter<'_, Token>> {
 #[derive(Debug)]
 pub struct Function {
     pub name: String,
-    pub body: Vec<Statement>,
+    pub body: Vec<BlockItem>,
 }
 
 impl ToTree<Function> for Peekable<Iter<'_, Token>> {
@@ -43,7 +43,7 @@ impl ToTree<Function> for Peekable<Iter<'_, Token>> {
                 if let Some(Token::Symbol(Symbol::OpenParen)) = self.next() {
                     if let Some(Token::Symbol(Symbol::CloseParen)) = self.next() {
                         if let Some(Token::Symbol(Symbol::OpenBrace)) = self.next() {
-                            let mut body: Vec<Statement> = Vec::new();
+                            let mut body: Vec<BlockItem> = Vec::new();
 
                             loop {
                                 if let Some(_) =
@@ -74,12 +74,29 @@ impl ToTree<Function> for Peekable<Iter<'_, Token>> {
     }
 }
 
+// BLOCK ITEM
+#[derive(Debug)]
+pub enum BlockItem {
+    Statement(Statement),
+    Declaration(Declarations),
+}
+
+impl ToTree<BlockItem> for Peekable<Iter<'_, Token>> {
+    fn to_tree(&mut self) -> Result<BlockItem, String> {
+        if let Some(Token::Keyword(Keyword::Int)) = self.peek() {
+            Ok(BlockItem::Declaration(self.to_tree()?))
+        } else {
+            Ok(BlockItem::Statement(self.to_tree()?))
+        }
+    }
+}
+
 // STATEMENT
 #[derive(Debug)]
 pub enum Statement {
     Return(Expr),
     Expr(Expr),
-    Declaration(Vec<(String, Option<Expr>)>),
+    If(Expr, Rc<Statement>, Option<Rc<Statement>>),
 }
 
 impl ToTree<Statement> for Peekable<Iter<'_, Token>> {
@@ -91,7 +108,46 @@ impl ToTree<Statement> for Peekable<Iter<'_, Token>> {
             } else {
                 Err("[Parser]: Expected ';'".to_string())
             }
-        } else if let Some(_) = self.next_if_eq(&&Token::Keyword(Keyword::Int)) {
+        } else if let Some(_) = self.next_if_eq(&&Token::Keyword(Keyword::If)) {
+            if let Some(Token::Symbol(Symbol::OpenParen)) = self.next() {
+                let expr = self.to_tree()?;
+                if let Some(Token::Symbol(Symbol::CloseParen)) = self.next() {
+                    let statement = Rc::new(self.to_tree()?);
+                    if let Some(_) = self.next_if_eq(&&Token::Keyword(Keyword::Else)) {
+                        Ok(Statement::If(
+                            expr,
+                            statement,
+                            Some(Rc::new(self.to_tree()?)),
+                        ))
+                    } else {
+                        Ok(Statement::If(expr, statement, None))
+                    }
+                } else {
+                    Err("[Parser]: Expected ')'".to_string())
+                }
+            } else {
+                Err("[Parser]: Expected '('".to_string())
+            }
+        } else {
+            let expr = self.to_tree()?;
+            if let Some(Token::Symbol(Symbol::Semicolon)) = self.next() {
+                Ok(Statement::Expr(expr))
+            } else {
+                Err("[Parser]: Expected ';'".to_string())
+            }
+        }
+    }
+}
+
+// DECLATAION
+#[derive(Debug)]
+pub struct Declarations {
+    pub declarations: Vec<(String, Option<Expr>)>,
+}
+
+impl ToTree<Declarations> for Peekable<Iter<'_, Token>> {
+    fn to_tree(&mut self) -> Result<Declarations, String> {
+        if let Some(_) = self.next_if_eq(&&Token::Keyword(Keyword::Int)) {
             let mut declarations = Vec::new();
 
             declarations.push(if let Some(Token::Identifier(id)) = self.next() {
@@ -119,17 +175,12 @@ impl ToTree<Statement> for Peekable<Iter<'_, Token>> {
             }
 
             if let Some(Token::Symbol(Symbol::Semicolon)) = self.next() {
-                Ok(Statement::Declaration(declarations))
+                Ok(Declarations { declarations })
             } else {
                 Err("[Parser]: Expected ';'".to_string())
             }
         } else {
-            let expr = self.to_tree()?;
-            if let Some(Token::Symbol(Symbol::Semicolon)) = self.next() {
-                Ok(Statement::Expr(expr))
-            } else {
-                Err("[Parser]: Expected ';'".to_string())
-            }
+            Err("[Parser]: Expected 'int'".to_string())
         }
     }
 }
@@ -138,7 +189,7 @@ impl ToTree<Statement> for Peekable<Iter<'_, Token>> {
 #[derive(Debug)]
 pub enum Expr {
     Assignment(String, AssignmentOp, Rc<Expr>),
-    LogOrExpr(LogOrExpr),
+    ConditionalExpr(ConditionalExpr),
 }
 
 #[derive(Debug)]
@@ -204,10 +255,40 @@ impl ToTree<Expr> for Peekable<Iter<'_, Token>> {
                     Rc::new(self.to_tree()?),
                 ))
             } else {
-                Ok(Expr::LogOrExpr(self.to_tree()?))
+                Ok(Expr::ConditionalExpr(self.to_tree()?))
             }
         } else {
-            Ok(Expr::LogOrExpr(self.to_tree()?))
+            Ok(Expr::ConditionalExpr(self.to_tree()?))
+        }
+    }
+}
+
+// CONDITIONAL EXPR
+#[derive(Debug)]
+pub struct ConditionalExpr {
+    pub log_or_expr: LogOrExpr,
+    pub options: Option<(Rc<Expr>, Rc<Expr>)>,
+}
+
+impl ToTree<ConditionalExpr> for Peekable<Iter<'_, Token>> {
+    fn to_tree(&mut self) -> Result<ConditionalExpr, String> {
+        let log_or_expr = self.to_tree()?;
+        if let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::QMark)) {
+            let expr1 = self.to_tree()?;
+            if let Some(Token::Symbol(Symbol::Colon)) = self.next() {
+                let expr2 = self.to_tree()?;
+                Ok(ConditionalExpr {
+                    log_or_expr,
+                    options: Some((Rc::new(expr1), Rc::new(expr2))),
+                })
+            } else {
+                Err("Expected ':'".to_string())
+            }
+        } else {
+            Ok(ConditionalExpr {
+                log_or_expr,
+                options: None,
+            })
         }
     }
 }

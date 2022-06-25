@@ -73,6 +73,8 @@ impl ToTokens for Peekable<Chars<'_>> {
 pub enum Keyword {
     Int,
     Return,
+    If,
+    Else,
 }
 
 trait Keywords {
@@ -85,6 +87,10 @@ impl Keywords for String {
             Some(Keyword::Int)
         } else if self == "return" {
             Some(Keyword::Return)
+        } else if self == "if" {
+            Some(Keyword::If)
+        } else if self == "else" {
+            Some(Keyword::Else)
         } else {
             None
         }
@@ -133,6 +139,8 @@ pub enum Symbol {
     BAndAssign, // &=
     BXorAssign, // ^=
     BOrAssign,  // |=
+    Colon,      // :
+    QMark,      // ?
 }
 
 trait Symbols {
@@ -257,6 +265,8 @@ impl Symbols for Peekable<Chars<'_>> {
                 }
             }
             ',' => Ok(Symbol::Comma),
+            ':' => Ok(Symbol::Colon),
+            '?' => Ok(Symbol::QMark),
             _ => Err("[Lexer]: Unexpected character".to_string()),
         }
     }

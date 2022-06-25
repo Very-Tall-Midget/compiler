@@ -1,9 +1,12 @@
 <program> ::= <function>
-<function> ::= "int" <id> "(" ")" "{" { <statement> } "}"
+<function> ::= "int" <id> "(" ")" "{" { <block-item> } "}"
+<block-item> ::= <statement> | <declaration>
 <statement> ::= "return" <expr> ";" |
                 | <exp> ";"
-                | "int" <id> [ = <exp>] { "," <id> [ = <exp>] } ";"
-<expr> ::= <id> <assignment-op> <expr> | <logical-or-expr>
+                | "if" "(" <exp> ")" <statement> [ "else" <statement> ]
+<declarations> ::= "int" <id> [ = <exp>] { "," <id> [ = <exp>] } ";"
+<expr> ::= <id> <assignment-op> <expr> | <conditional-expr>
+<conditional-expr> ::= <logical-or-expr> [ "?" <expr> ":" <expr> ]
 <logical-or-expr> ::= <logical-and-expr>
                     { "||" <logical-and-expr> }
 <logical-and-expr> ::= <bit-or-expr> { "&&" <bit-or-expr> }
