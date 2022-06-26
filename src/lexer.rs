@@ -80,6 +80,8 @@ pub enum Keyword {
     Do,
     Break,
     Continue,
+    Cdecl,
+    Syscall,
 }
 
 trait Keywords {
@@ -106,6 +108,10 @@ impl Keywords for String {
             Some(Keyword::Break)
         } else if self == "continue" {
             Some(Keyword::Continue)
+        } else if self == "__cdecl" {
+            Some(Keyword::Cdecl)
+        } else if self == "__syscall" {
+            Some(Keyword::Syscall)
         } else {
             None
         }

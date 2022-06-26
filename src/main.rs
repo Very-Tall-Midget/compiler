@@ -53,7 +53,7 @@ fn main() -> Result<(), String> {
 
     write_assembly(asm);
     compile_assembly(out);
-    fs::remove_file("assembly.s").unwrap();
+    //fs::remove_file("assembly.s").unwrap();
 
     Ok(())
 }

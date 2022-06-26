@@ -13,6 +13,7 @@ fn get_label() -> String {
 #[derive(Debug, Clone)]
 struct Context {
     pub var_map: HashMap<String, i32>,
+    pub func_map: HashMap<String, (i32, bool, CallingConv)>, // identifier, (number of parameters, is defined, calling convention)
     pub scope: HashSet<String>,
     pub stack_index: i32,
     pub break_label: Option<String>,
@@ -25,22 +26,79 @@ trait ToAssembly {
 
 impl ToAssembly for Program {
     fn to_assembly(&self, ctx: &mut Context) -> Result<String, String> {
-        let mut res = String::from("    .globl main\n");
-        res.push_str(self.func.to_assembly(ctx)?.as_str());
+        let mut res = String::new();
+        for func in &self.funcs {
+            if let Some(_) = func.body {
+                if let Some(info) = ctx.func_map.get(&func.name) {
+                    if info.1 {
+                        return Err(format!(
+                            "[Code Generation]: Function '{}' is already defined",
+                            func.name
+                        ));
+                    }
+                    if info.0 != func.params.len() as i32 {
+                        return Err(format!(
+                            "[Code Generation]: Definition of '{}' disagrees with its declaration",
+                            func.name
+                        ));
+                    }
+                }
+                ctx.func_map.insert(
+                    func.name.clone(),
+                    (func.params.len() as i32, true, CallingConv::Cdecl),
+                );
+                let mut ctx = Context {
+                    var_map: HashMap::new(),
+                    func_map: ctx.func_map.clone(),
+                    scope: HashSet::new(),
+                    stack_index: -8,
+                    break_label: None,
+                    continue_label: None,
+                };
+                let mut param_offset = 16;
+                for param in &func.params {
+                    ctx.var_map.insert(param.clone(), param_offset);
+                    ctx.scope.insert(param.clone());
+                    param_offset += 8;
+                }
+                res.push_str(func.to_assembly(&mut ctx)?.as_str());
+            } else {
+                if let Some(info) = ctx.func_map.get(&func.name) {
+                    if info.0 != func.params.len() as i32 {
+                        return Err(format!(
+                            "[Code Generation]: Conflicting declarations of '{}'",
+                            func.name
+                        ));
+                    }
+                } else {
+                    ctx.func_map.insert(
+                        func.name.clone(),
+                        (func.params.len() as i32, false, func.call_conv.clone()),
+                    );
+                }
+            }
+        }
         Ok(res)
     }
 }
 
 impl ToAssembly for Function {
     fn to_assembly(&self, ctx: &mut Context) -> Result<String, String> {
-        let mut res = format!("{}:\n    push %rbp\n    mov %rsp, %rbp\n", self.name);
+        let mut res = format!(
+            "    .globl {0}\n{0}:\n    push %rbp\n    mov %rsp, %rbp\n",
+            self.name
+        );
         ctx.stack_index = -8;
-        res.push_str(self.body.to_assembly(ctx)?.as_str());
+        res.push_str(
+            self.body
+                .as_ref()
+                .expect("[Code Generation]: lol idk how it managed to get here")
+                .to_assembly(ctx)?
+                .as_str(),
+        );
 
-        if self.name == "main" {
-            // placed to return incase a return didn't happen
-            res.push_str("    mov $0, %rax\n    mov %rbp, %rsp\n    pop %rbp\n    ret\n");
-        }
+        // placed to return incase a return didn't happen
+        res.push_str("    mov $0, %rax\n    mov %rbp, %rsp\n    pop %rbp\n    ret\n");
 
         Ok(res)
     }
@@ -198,9 +256,7 @@ impl ToAssembly for Block {
                         new_ctx.scope = temp_ctx.scope;
                         r
                     }
-                    BlockItem::Declaration(d) => {
-                        d.to_assembly(&mut new_ctx)?
-                    }
+                    BlockItem::Declaration(d) => d.to_assembly(&mut new_ctx)?,
                 }
                 .as_str(),
             );
@@ -507,7 +563,7 @@ impl ToAssembly for Factor {
                     UnaryOp::Negation => res.push_str("    neg %rax\n"),
                     UnaryOp::Complement => res.push_str("    not %rax\n"),
                     UnaryOp::Not => {
-                        res.push_str("    cmp $0, %rax\n    mov $0, %rax\n    sete %al\n")
+                        res.push_str("    cmp , %rax\n    mov $0, %rax\n    sete %al\n")
                     }
                 }
                 Ok(res)
@@ -526,6 +582,50 @@ impl ToAssembly for Factor {
                     ))
                 } else {
                     Err(format!("[Code Generation]: Undeclared variable '{}'", id))
+                }
+            }
+            Factor::FunctionCall(id, args) => {
+                if let Some(func) = ctx.func_map.get(id) {
+                    if func.0 != args.len() as i32 {
+                        Err(format!(
+                            "[Code Generation]: Incorrect number of arguments for '{}'",
+                            id
+                        ))
+                    } else {
+                        let mut res = String::new();
+                        match func.2 {
+                            CallingConv::Cdecl => {
+                                for arg in args.iter().rev() {
+                                    res.push_str(arg.to_assembly(ctx)?.as_str());
+                                    res.push_str("    push %rax\n");
+                                }
+                                res.push_str(format!("    call {}\n", id).as_str());
+                                res.push_str(format!("    add ${}, %rsp\n", args.len() * 8).as_str());
+                            }
+                            CallingConv::Syscall => {
+                                if args.len() > 3 {
+                                    return Err("[Code Generation]: __syscall calls with more than 3 arguments are not supported".to_string());
+                                }
+                                if let Some(arg1) = args.get(0) {
+                                    res.push_str(arg1.to_assembly(ctx)?.as_str());
+                                    res.push_str("    mov %rax, %rdi\n");
+                                    if let Some(arg2) = args.get(1) {
+                                        res.push_str(arg2.to_assembly(ctx)?.as_str());
+                                        res.push_str("    mov %rax, %rsi\n");
+                                        if let Some(arg3) = args.get(2) {
+                                            res.push_str(arg3.to_assembly(ctx)?.as_str());
+                                            res.push_str("    mov %rax, %rdx\n");
+                                        }
+                                    }
+                                }
+                                res.push_str(format!("    call {}\n", id).as_str());
+                            }
+                        }
+                        
+                        Ok(res)
+                    }
+                } else {
+                    Err(format!("[Code Generation]: Unknown function '{}'", id))
                 }
             }
         }
@@ -559,6 +659,7 @@ impl ToAssembly for PostfixID {
 pub fn generate(tree: &Program) -> Result<String, String> {
     let mut ctx = Context {
         var_map: HashMap::new(),
+        func_map: HashMap::new(),
         scope: HashSet::new(),
         stack_index: -8,
         continue_label: None,

@@ -1,5 +1,5 @@
-<program> ::= <function>
-<function> ::= "int" <id> "(" ")" "{" { <block-item> } "}"
+<program> ::= { <function> }
+<function> ::= "int" [ <call-conv> ] <id> "(" [ "int" <id> { "," "int" <id> } ] ")" ( "{" { <block-item } "}" | ";" )
 <block-item> ::= <statement> | <declaration>
 <statement> ::= "return" <expr> ";" |
                 | <expr-opt> ";"
@@ -29,7 +29,9 @@
 <shift-expr> ::= <additive-expr> { ("<<" | ">>") <additive-expr> }
 <additive-expr> ::= <term> { ("+" | "-") <term> }
 <term> ::= <factor> { ("*" | "/" | "%") <factor> }
-<factor> ::= "(" <expr> ")" | <unary-op> <factor> | <int> | [ "++" | "--" ] <id> | <postfix-id>
+<factor> ::= <function-call> | "(" <expr> ")" | <unary-op> <factor> | <int> | [ "++" | "--" ] <id> | <postfix-id>
 <postfix-id> ::= <id> [ "++" | "--" ]
 <unary-op> ::= "!" | "~" | "-"
 <assignment-op> ::= "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "<<=" | ">>=" | "&=" | "|=" | "^="
+<function-call> ::= <id> "(" [ <expr> { "," <expr> } ] ")"
+<call-conv> ::= "__cdecl" | "__syscall"

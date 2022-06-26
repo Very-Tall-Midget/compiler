@@ -13,42 +13,92 @@ trait ToTree<T> {
 // PROGRAM
 #[derive(Debug)]
 pub struct Program {
-    pub func: Function,
+    pub funcs: Vec<Function>,
 }
 
 impl ToTree<Program> for Peekable<Iter<'_, Token>> {
     fn to_tree(&mut self) -> Result<Program, String> {
-        let func = self.to_tree()?;
+        let mut funcs = Vec::new();
+        funcs.push(self.to_tree()?);
 
-        if let Some(Token::EOF) = self.next() {
-            Ok(Program { func })
-        } else {
-            Err("[Parser]: Expected end of file".to_string())
+        loop {
+            if let Some(_) = self.next_if_eq(&&Token::EOF) {
+                break;
+            } else {
+                funcs.push(self.to_tree()?);
+            }
         }
+        Ok(Program { funcs })
     }
 }
 
 // FUNCTION
 #[derive(Debug)]
 pub struct Function {
+    pub call_conv: CallingConv,
     pub name: String,
-    pub body: Block,
+    pub params: Vec<String>,
+    pub body: Option<Block>,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum CallingConv {
+    Cdecl,
+    Syscall,
 }
 
 impl ToTree<Function> for Peekable<Iter<'_, Token>> {
     fn to_tree(&mut self) -> Result<Function, String> {
         if let Some(Token::Keyword(Keyword::Int)) = self.next() {
+            let mut call_conv = CallingConv::Cdecl;
+            if let Some(Token::Keyword(k)) = self.next_if(|&t| match t {
+                Token::Keyword(_) => true,
+                _ => false,
+            }) {
+                match k {
+                    Keyword::Cdecl => call_conv = CallingConv::Cdecl,
+                    Keyword::Syscall => call_conv = CallingConv::Syscall,
+                    _ => return Err("[Parser]: Expeced identifier or calling convention".to_string()),
+                }
+            }
             if let Some(Token::Identifier(i)) = self.next() {
                 let name = i.clone();
                 if let Some(Token::Symbol(Symbol::OpenParen)) = self.next() {
+                    let mut params = Vec::new();
+                    while let Some(_) = self.next_if_eq(&&Token::Keyword(Keyword::Int)) {
+                        if let Some(Token::Identifier(id)) = &self.next() {
+                            params.push(id.clone());
+                            if let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::Comma)) {
+                                continue;
+                            } else {
+                                break;
+                            }
+                        } else {
+                            return Err("[Parser]: Expected identifier".to_string());
+                        }
+                    }
+
                     if let Some(Token::Symbol(Symbol::CloseParen)) = self.next() {
                         if let Some(Token::Symbol(Symbol::OpenBrace)) = self.peek() {
+                            if call_conv == CallingConv::Syscall {
+                                Err("[Parser]: Cannot define functions with calling convention '__syscall'".to_string())
+                            } else {
+                                Ok(Function {
+                                    call_conv,
+                                    name,
+                                    params,
+                                    body: Some(self.to_tree()?),
+                                })
+                            }
+                        } else if let Some(Token::Symbol(Symbol::Semicolon)) = self.next() {
                             Ok(Function {
+                                call_conv,
                                 name,
-                                body: self.to_tree()?,
+                                params,
+                                body: None,
                             })
                         } else {
-                            Err("[Parser]: Expected '{'".to_string())
+                            Err("[Parser]: Expected '{' or ';'".to_string())
                         }
                     } else {
                         Err("[Parser]: Expected ')'".to_string())
@@ -327,7 +377,9 @@ impl ToTree<ExprOptCloseParen> for Peekable<Iter<'_, Token>> {
 
 impl ExprOptCloseParen {
     fn to_expr_opt(&self) -> ExprOpt {
-        ExprOpt { expr: self.expr.clone() }
+        ExprOpt {
+            expr: self.expr.clone(),
+        }
     }
 }
 
@@ -750,6 +802,7 @@ pub enum Factor {
     Constant(u32),
     Identifier(PostfixID),
     Prefix(IncDec, String),
+    FunctionCall(String, Vec<Expr>),
 }
 
 #[derive(Debug, Clone)]
@@ -801,9 +854,38 @@ impl ToTree<Factor> for Peekable<Iter<'_, Token>> {
                 Err("Expected identifier".to_string())
             }
         } else if let Some(Token::Identifier(_)) = self.peek() {
-            Ok(Factor::Identifier(self.to_tree()?))
+            let mut copy = self.clone();
+            copy.next();
+            if let Some(Token::Symbol(Symbol::OpenParen)) = copy.next() {
+                if let Some(Token::Identifier(id)) = self.next() {
+                    self.next();
+
+                    if let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::CloseParen)) {
+                        Ok(Factor::FunctionCall(id.clone(), Vec::new()))
+                    } else {
+                        let mut args = Vec::new();
+                        loop {
+                            args.push(self.to_tree()?);
+                            if let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::Comma)) {
+                                continue;
+                            } else if let Some(_) =
+                                self.next_if_eq(&&Token::Symbol(Symbol::CloseParen))
+                            {
+                                break;
+                            } else {
+                                return Err("[Parser]: Expected ',' or ')'".to_string());
+                            }
+                        }
+                        Ok(Factor::FunctionCall(id.clone(), args))
+                    }
+                } else {
+                    unreachable!()
+                }
+            } else {
+                Ok(Factor::Identifier(self.to_tree()?))
+            }
         } else {
-            Err("[Parser]: Expected expr, unary operator or integer".to_string())
+            Err("[Parser]: Expected expr, unary operator, integer or identifier".to_string())
         }
     }
 }
