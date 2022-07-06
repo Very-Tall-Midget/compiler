@@ -2,33 +2,70 @@ use std::{iter::Peekable, rc::Rc, slice::Iter};
 
 use super::lexer::*;
 
-pub fn ast(tokens: &Vec<Token>) -> Result<Program, String> {
-    tokens.iter().peekable().to_tree()
-}
+macro_rules! gen_into(
+    ($from:ident -> $to:ident: [ $($match_from:pat => $match_to:expr),+ $(,)? ]) => {
+        impl Into<$to> for &$from {
+            fn into(self) -> $to {
+                match self {
+                    $($match_from => $match_to),+,
+                    _ => unreachable!(),
+                }
+            }
+        }
+    };
+);
+
+type Tree<T> = Result<T, String>;
+type Tokens<'a> = Peekable<Iter<'a, Token>>;
 
 trait ToTree<T> {
-    fn to_tree(&mut self) -> Result<T, String>;
+    fn to_tree(&mut self) -> Tree<T>;
+}
+
+// MAIN FUNCTION
+pub fn ast(tokens: &Vec<Token>) -> Tree<Program> {
+    tokens.iter().peekable().to_tree()
 }
 
 // PROGRAM
 #[derive(Debug)]
 pub struct Program {
-    pub funcs: Vec<Function>,
+    pub items: Vec<ProgramItems>,
 }
 
-impl ToTree<Program> for Peekable<Iter<'_, Token>> {
-    fn to_tree(&mut self) -> Result<Program, String> {
-        let mut funcs = Vec::new();
-        funcs.push(self.to_tree()?);
+#[derive(Debug)]
+pub enum ProgramItems {
+    Function(Function),
+    Declarations(Declarations),
+}
+
+impl ToTree<Program> for Tokens<'_> {
+    fn to_tree(&mut self) -> Tree<Program> {
+        let mut items = Vec::new();
 
         loop {
             if let Some(_) = self.next_if_eq(&&Token::EOF) {
                 break;
             } else {
-                funcs.push(self.to_tree()?);
+                let mut copy = self.clone();
+                if let Some(Token::Keyword(Keyword::Int)) = copy.next() {
+                    if let Some(Token::Identifier(_)) = copy.next() {
+                        match copy.next() {
+                            Some(Token::Symbol(Symbol::OpenParen)) => {
+                                items.push(ProgramItems::Function(self.to_tree()?))
+                            }
+                            _ => items.push(ProgramItems::Declarations(self.to_tree()?)),
+                        }
+                    } else {
+                        items.push(ProgramItems::Function(self.to_tree()?));
+                    }
+                } else {
+                    return Err("[Parser]: Expected 'int'".to_string());
+                }
             }
         }
-        Ok(Program { funcs })
+
+        Ok(Program { items })
     }
 }
 
@@ -47,19 +84,16 @@ pub enum CallingConv {
     Syscall,
 }
 
-impl ToTree<Function> for Peekable<Iter<'_, Token>> {
-    fn to_tree(&mut self) -> Result<Function, String> {
+gen_into!(Keyword -> CallingConv: [ Keyword::Cdecl => CallingConv::Cdecl, Keyword::Syscall => CallingConv::Syscall ]);
+
+impl ToTree<Function> for Tokens<'_> {
+    fn to_tree(&mut self) -> Tree<Function> {
         if let Some(Token::Keyword(Keyword::Int)) = self.next() {
             let mut call_conv = CallingConv::Cdecl;
-            if let Some(Token::Keyword(k)) = self.next_if(|&t| match t {
-                Token::Keyword(_) => true,
-                _ => false,
-            }) {
-                match k {
-                    Keyword::Cdecl => call_conv = CallingConv::Cdecl,
-                    Keyword::Syscall => call_conv = CallingConv::Syscall,
-                    _ => return Err("[Parser]: Expeced identifier or calling convention".to_string()),
-                }
+            if let Some(Token::Keyword(k)) =
+                self.next_if(|&t| matches!(t, Token::Keyword(Keyword::Cdecl | Keyword::Syscall)))
+            {
+                call_conv = k.into();
             }
             if let Some(Token::Identifier(i)) = self.next() {
                 let name = i.clone();
@@ -122,8 +156,8 @@ pub enum BlockItem {
     Declaration(Declarations),
 }
 
-impl ToTree<BlockItem> for Peekable<Iter<'_, Token>> {
-    fn to_tree(&mut self) -> Result<BlockItem, String> {
+impl ToTree<BlockItem> for Tokens<'_> {
+    fn to_tree(&mut self) -> Tree<BlockItem> {
         if let Some(Token::Keyword(Keyword::Int)) = self.peek() {
             Ok(BlockItem::Declaration(self.to_tree()?))
         } else {
@@ -147,8 +181,8 @@ pub enum Statement {
     Continue,
 }
 
-impl ToTree<Statement> for Peekable<Iter<'_, Token>> {
-    fn to_tree(&mut self) -> Result<Statement, String> {
+impl ToTree<Statement> for Tokens<'_> {
+    fn to_tree(&mut self) -> Tree<Statement> {
         if let Some(_) = self.next_if_eq(&&Token::Keyword(Keyword::Return)) {
             let expr = self.to_tree()?;
             if let Some(Token::Symbol(Symbol::Semicolon)) = self.next() {
@@ -279,8 +313,8 @@ pub struct Block {
     pub items: Vec<BlockItem>,
 }
 
-impl ToTree<Block> for Peekable<Iter<'_, Token>> {
-    fn to_tree(&mut self) -> Result<Block, String> {
+impl ToTree<Block> for Tokens<'_> {
+    fn to_tree(&mut self) -> Tree<Block> {
         let mut items = Vec::new();
         if let Some(Token::Symbol(Symbol::OpenBrace)) = self.next() {
             loop {
@@ -301,8 +335,8 @@ pub struct Declarations {
     pub declarations: Vec<(String, Option<Expr>)>,
 }
 
-impl ToTree<Declarations> for Peekable<Iter<'_, Token>> {
-    fn to_tree(&mut self) -> Result<Declarations, String> {
+impl ToTree<Declarations> for Tokens<'_> {
+    fn to_tree(&mut self) -> Tree<Declarations> {
         if let Some(_) = self.next_if_eq(&&Token::Keyword(Keyword::Int)) {
             let mut declarations = Vec::new();
 
@@ -347,8 +381,8 @@ pub struct ExprOpt {
     pub expr: Option<Expr>,
 }
 
-impl ToTree<ExprOpt> for Peekable<Iter<'_, Token>> {
-    fn to_tree(&mut self) -> Result<ExprOpt, String> {
+impl ToTree<ExprOpt> for Tokens<'_> {
+    fn to_tree(&mut self) -> Tree<ExprOpt> {
         if let Some(Token::Symbol(Symbol::Semicolon)) = self.peek() {
             Ok(ExprOpt { expr: None })
         } else {
@@ -364,8 +398,8 @@ pub struct ExprOptCloseParen {
     pub expr: Option<Expr>,
 }
 
-impl ToTree<ExprOptCloseParen> for Peekable<Iter<'_, Token>> {
-    fn to_tree(&mut self) -> Result<ExprOptCloseParen, String> {
+impl ToTree<ExprOptCloseParen> for Tokens<'_> {
+    fn to_tree(&mut self) -> Tree<ExprOptCloseParen> {
         if let Some(Token::Symbol(Symbol::CloseParen)) = self.peek() {
             Ok(ExprOptCloseParen { expr: None })
         } else {
@@ -405,51 +439,46 @@ pub enum AssignmentOp {
     BOrAssign,
 }
 
-impl ToTree<Expr> for Peekable<Iter<'_, Token>> {
-    fn to_tree(&mut self) -> Result<Expr, String> {
+gen_into!(Symbol -> AssignmentOp: [ Symbol::Assignment => AssignmentOp::Assign,
+    Symbol::AddAssign => AssignmentOp::AddAssign,
+    Symbol::SubAssign => AssignmentOp::SubAssign,
+    Symbol::MultAssign => AssignmentOp::MultAssign,
+    Symbol::DivAssign => AssignmentOp::DivAssign,
+    Symbol::ModAssign => AssignmentOp::ModAssign,
+    Symbol::SLAssign => AssignmentOp::SLAssign,
+    Symbol::SRAssign => AssignmentOp::SRAssign,
+    Symbol::BAndAssign => AssignmentOp::BAndAssign,
+    Symbol::BXorAssign => AssignmentOp::BXorAssign,
+    Symbol::BOrAssign => AssignmentOp::BOrAssign,
+]);
+
+impl ToTree<Expr> for Tokens<'_> {
+    fn to_tree(&mut self) -> Tree<Expr> {
         let mut copy = self.clone();
-        if let Some(Token::Identifier(id)) = copy.next_if(|&t| match t {
-            Token::Identifier(_) => true,
-            _ => false,
-        }) {
+        if let Some(Token::Identifier(id)) = copy.next_if(|&t| matches!(t, Token::Identifier(_))) {
             if let Some(Token::Symbol(s)) = copy.next_if(|&t| {
-                if let Token::Symbol(s) = t {
-                    match s {
-                        Symbol::Assignment => true,
-                        Symbol::AddAssign => true,
-                        Symbol::SubAssign => true,
-                        Symbol::MultAssign => true,
-                        Symbol::DivAssign => true,
-                        Symbol::ModAssign => true,
-                        Symbol::SLAssign => true,
-                        Symbol::SRAssign => true,
-                        Symbol::BAndAssign => true,
-                        Symbol::BXorAssign => true,
-                        Symbol::BOrAssign => true,
-                        _ => false,
-                    }
-                } else {
-                    false
-                }
+                matches!(
+                    t,
+                    Token::Symbol(
+                        Symbol::Assignment
+                            | Symbol::AddAssign
+                            | Symbol::SubAssign
+                            | Symbol::MultAssign
+                            | Symbol::DivAssign
+                            | Symbol::ModAssign
+                            | Symbol::SLAssign
+                            | Symbol::SRAssign
+                            | Symbol::BAndAssign
+                            | Symbol::BXorAssign
+                            | Symbol::BOrAssign
+                    )
+                )
             }) {
                 self.next();
                 self.next();
                 Ok(Expr::Assignment(
                     id.clone(),
-                    match s {
-                        Symbol::Assignment => AssignmentOp::Assign,
-                        Symbol::AddAssign => AssignmentOp::AddAssign,
-                        Symbol::SubAssign => AssignmentOp::SubAssign,
-                        Symbol::MultAssign => AssignmentOp::MultAssign,
-                        Symbol::DivAssign => AssignmentOp::DivAssign,
-                        Symbol::ModAssign => AssignmentOp::ModAssign,
-                        Symbol::SLAssign => AssignmentOp::SLAssign,
-                        Symbol::SRAssign => AssignmentOp::SRAssign,
-                        Symbol::BAndAssign => AssignmentOp::BAndAssign,
-                        Symbol::BXorAssign => AssignmentOp::BXorAssign,
-                        Symbol::BOrAssign => AssignmentOp::BOrAssign,
-                        _ => unreachable!(),
-                    },
+                    s.into(),
                     Rc::new(self.to_tree()?),
                 ))
             } else {
@@ -468,8 +497,8 @@ pub struct ConditionalExpr {
     pub options: Option<(Rc<Expr>, Rc<Expr>)>,
 }
 
-impl ToTree<ConditionalExpr> for Peekable<Iter<'_, Token>> {
-    fn to_tree(&mut self) -> Result<ConditionalExpr, String> {
+impl ToTree<ConditionalExpr> for Tokens<'_> {
+    fn to_tree(&mut self) -> Tree<ConditionalExpr> {
         let log_or_expr = self.to_tree()?;
         if let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::QMark)) {
             let expr1 = self.to_tree()?;
@@ -498,8 +527,8 @@ pub struct LogOrExpr {
     pub log_and_exprs: Vec<LogAndExpr>,
 }
 
-impl ToTree<LogOrExpr> for Peekable<Iter<'_, Token>> {
-    fn to_tree(&mut self) -> Result<LogOrExpr, String> {
+impl ToTree<LogOrExpr> for Tokens<'_> {
+    fn to_tree(&mut self) -> Tree<LogOrExpr> {
         let log_and_expr = self.to_tree()?;
         let mut log_and_exprs = Vec::new();
 
@@ -521,8 +550,8 @@ pub struct LogAndExpr {
     pub bit_or_exprs: Vec<BitOrExpr>,
 }
 
-impl ToTree<LogAndExpr> for Peekable<Iter<'_, Token>> {
-    fn to_tree(&mut self) -> Result<LogAndExpr, String> {
+impl ToTree<LogAndExpr> for Tokens<'_> {
+    fn to_tree(&mut self) -> Tree<LogAndExpr> {
         let bit_or_expr = self.to_tree()?;
         let mut bit_or_exprs = Vec::new();
 
@@ -544,8 +573,8 @@ pub struct BitOrExpr {
     pub bit_xor_exprs: Vec<BitXorExpr>,
 }
 
-impl ToTree<BitOrExpr> for Peekable<Iter<'_, Token>> {
-    fn to_tree(&mut self) -> Result<BitOrExpr, String> {
+impl ToTree<BitOrExpr> for Tokens<'_> {
+    fn to_tree(&mut self) -> Tree<BitOrExpr> {
         let bit_xor_expr = self.to_tree()?;
         let mut bit_xor_exprs = Vec::new();
 
@@ -567,8 +596,8 @@ pub struct BitXorExpr {
     pub bit_and_exprs: Vec<BitAndExpr>,
 }
 
-impl ToTree<BitXorExpr> for Peekable<Iter<'_, Token>> {
-    fn to_tree(&mut self) -> Result<BitXorExpr, String> {
+impl ToTree<BitXorExpr> for Tokens<'_> {
+    fn to_tree(&mut self) -> Tree<BitXorExpr> {
         let bit_and_expr = self.to_tree()?;
         let mut bit_and_exprs = Vec::new();
 
@@ -590,8 +619,8 @@ pub struct BitAndExpr {
     pub eq_exprs: Vec<EqExpr>,
 }
 
-impl ToTree<BitAndExpr> for Peekable<Iter<'_, Token>> {
-    fn to_tree(&mut self) -> Result<BitAndExpr, String> {
+impl ToTree<BitAndExpr> for Tokens<'_> {
+    fn to_tree(&mut self) -> Tree<BitAndExpr> {
         let eq_expr = self.to_tree()?;
         let mut eq_exprs = Vec::new();
 
@@ -616,22 +645,17 @@ pub enum EqOp {
     NotEqual,
 }
 
-impl ToTree<EqExpr> for Peekable<Iter<'_, Token>> {
-    fn to_tree(&mut self) -> Result<EqExpr, String> {
+gen_into!(Token -> EqOp: [ Token::Symbol(Symbol::IsEqual) => EqOp::IsEqual, Token::Symbol(Symbol::NotEqual) => EqOp::NotEqual ]);
+
+impl ToTree<EqExpr> for Tokens<'_> {
+    fn to_tree(&mut self) -> Tree<EqExpr> {
         let rel_expr = self.to_tree()?;
         let mut rel_exprs = Vec::new();
 
-        while let Some(t) = self.next_if(|&t| {
-            t == &Token::Symbol(Symbol::IsEqual) || t == &Token::Symbol(Symbol::NotEqual)
-        }) {
-            rel_exprs.push((
-                match t {
-                    Token::Symbol(Symbol::IsEqual) => EqOp::IsEqual,
-                    Token::Symbol(Symbol::NotEqual) => EqOp::NotEqual,
-                    _ => unreachable!(),
-                },
-                self.to_tree()?,
-            ));
+        while let Some(t) =
+            self.next_if(|&t| matches!(t, Token::Symbol(Symbol::IsEqual | Symbol::NotEqual)))
+        {
+            rel_exprs.push((t.into(), self.to_tree()?));
         }
 
         Ok(EqExpr {
@@ -656,27 +680,20 @@ pub enum RelOp {
     GTE,
 }
 
-impl ToTree<RelExpr> for Peekable<Iter<'_, Token>> {
-    fn to_tree(&mut self) -> Result<RelExpr, String> {
+gen_into!(Token -> RelOp: [ Token::Symbol(Symbol::LT) => RelOp::LT, Token::Symbol(Symbol::GT) => RelOp::GT, Token::Symbol(Symbol::LTE) => RelOp::LTE, Token::Symbol(Symbol::GTE) => RelOp::GTE ]);
+
+impl ToTree<RelExpr> for Tokens<'_> {
+    fn to_tree(&mut self) -> Tree<RelExpr> {
         let shift_expr = self.to_tree()?;
         let mut shift_exprs = Vec::new();
 
         while let Some(t) = self.next_if(|&t| {
-            t == &Token::Symbol(Symbol::LT)
-                || t == &Token::Symbol(Symbol::GT)
-                || t == &Token::Symbol(Symbol::LTE)
-                || t == &Token::Symbol(Symbol::GTE)
+            matches!(
+                t,
+                Token::Symbol(Symbol::LT | Symbol::GT | Symbol::LTE | Symbol::GTE)
+            )
         }) {
-            shift_exprs.push((
-                match t {
-                    Token::Symbol(Symbol::LT) => RelOp::LT,
-                    Token::Symbol(Symbol::GT) => RelOp::GT,
-                    Token::Symbol(Symbol::LTE) => RelOp::LTE,
-                    Token::Symbol(Symbol::GTE) => RelOp::GTE,
-                    _ => unreachable!(),
-                },
-                self.to_tree()?,
-            ));
+            shift_exprs.push((t.into(), self.to_tree()?));
         }
 
         Ok(RelExpr {
@@ -699,22 +716,17 @@ pub enum ShiftOp {
     Right,
 }
 
-impl ToTree<ShiftExpr> for Peekable<Iter<'_, Token>> {
-    fn to_tree(&mut self) -> Result<ShiftExpr, String> {
+gen_into!(Token -> ShiftOp: [ Token::Symbol(Symbol::ShiftLeft) => ShiftOp::Left, Token::Symbol(Symbol::ShiftRight) => ShiftOp::Right ]);
+
+impl ToTree<ShiftExpr> for Tokens<'_> {
+    fn to_tree(&mut self) -> Tree<ShiftExpr> {
         let add_expr = self.to_tree()?;
         let mut add_exprs = Vec::new();
 
-        while let Some(t) = self.next_if(|&t| {
-            t == &Token::Symbol(Symbol::ShiftLeft) || t == &Token::Symbol(Symbol::ShiftRight)
-        }) {
-            add_exprs.push((
-                match t {
-                    Token::Symbol(Symbol::ShiftLeft) => ShiftOp::Left,
-                    Token::Symbol(Symbol::ShiftRight) => ShiftOp::Right,
-                    _ => unreachable!(),
-                },
-                self.to_tree()?,
-            ));
+        while let Some(t) =
+            self.next_if(|&t| matches!(t, Token::Symbol(Symbol::ShiftLeft | Symbol::ShiftRight)))
+        {
+            add_exprs.push((t.into(), self.to_tree()?));
         }
 
         Ok(ShiftExpr {
@@ -740,22 +752,17 @@ pub enum BinaryOp {
     Modulo,
 }
 
-impl ToTree<AddExpr> for Peekable<Iter<'_, Token>> {
-    fn to_tree(&mut self) -> Result<AddExpr, String> {
+gen_into!(Token -> BinaryOp: [ Token::Symbol(Symbol::Add) => BinaryOp::Addition, Token::Symbol(Symbol::Negation) => BinaryOp::Subtraction, Token::Symbol(Symbol::Mult) => BinaryOp::Multiply, Token::Symbol(Symbol::Div) => BinaryOp::Divide, Token::Symbol(Symbol::Mod) => BinaryOp::Modulo ]);
+
+impl ToTree<AddExpr> for Tokens<'_> {
+    fn to_tree(&mut self) -> Tree<AddExpr> {
         let term = self.to_tree()?;
         let mut terms = Vec::new();
 
-        while let Some(t) = self
-            .next_if(|&t| t == &Token::Symbol(Symbol::Add) || t == &Token::Symbol(Symbol::Negation))
+        while let Some(t) =
+            self.next_if(|&t| matches!(t, Token::Symbol(Symbol::Add | Symbol::Negation)))
         {
-            terms.push((
-                match t {
-                    Token::Symbol(Symbol::Add) => BinaryOp::Addition,
-                    Token::Symbol(Symbol::Negation) => BinaryOp::Subtraction,
-                    _ => unreachable!(),
-                },
-                self.to_tree()?,
-            ));
+            terms.push((t.into(), self.to_tree()?));
         }
 
         Ok(AddExpr { term, terms })
@@ -769,25 +776,15 @@ pub struct Term {
     pub factors: Vec<(BinaryOp, Factor)>,
 }
 
-impl ToTree<Term> for Peekable<Iter<'_, Token>> {
-    fn to_tree(&mut self) -> Result<Term, String> {
+impl ToTree<Term> for Tokens<'_> {
+    fn to_tree(&mut self) -> Tree<Term> {
         let factor = self.to_tree()?;
         let mut factors = Vec::new();
 
-        while let Some(t) = self.next_if(|&t| {
-            t == &Token::Symbol(Symbol::Mult)
-                || t == &Token::Symbol(Symbol::Div)
-                || t == &Token::Symbol(Symbol::Mod)
-        }) {
-            factors.push((
-                match t {
-                    Token::Symbol(Symbol::Mult) => BinaryOp::Multiply,
-                    Token::Symbol(Symbol::Div) => BinaryOp::Divide,
-                    Token::Symbol(Symbol::Mod) => BinaryOp::Modulo,
-                    _ => unreachable!(),
-                },
-                self.to_tree()?,
-            ));
+        while let Some(t) =
+            self.next_if(|&t| matches!(t, Token::Symbol(Symbol::Mult | Symbol::Div | Symbol::Mod)))
+        {
+            factors.push((t.into(), self.to_tree()?));
         }
 
         Ok(Term { factor, factors })
@@ -811,6 +808,8 @@ pub enum IncDec {
     Decrement,
 }
 
+gen_into!(Symbol -> IncDec: [ Symbol::Increment => IncDec::Incremenet, Symbol::Decrement => IncDec::Decrement ]);
+
 #[derive(Debug, Clone)]
 pub enum UnaryOp {
     Negation,
@@ -818,8 +817,8 @@ pub enum UnaryOp {
     Not,
 }
 
-impl ToTree<Factor> for Peekable<Iter<'_, Token>> {
-    fn to_tree(&mut self) -> Result<Factor, String> {
+impl ToTree<Factor> for Tokens<'_> {
+    fn to_tree(&mut self) -> Tree<Factor> {
         if let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::OpenParen)) {
             let expr = self.to_tree()?;
             if let Some(Token::Symbol(Symbol::CloseParen)) = self.next() {
@@ -836,12 +835,9 @@ impl ToTree<Factor> for Peekable<Iter<'_, Token>> {
             ))
         } else if let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::Negation)) {
             Ok(Factor::UnaryOp(UnaryOp::Negation, Rc::new(self.to_tree()?)))
-        } else if let Some(&Token::Integer(i)) = self.next_if(|&t| match t {
-            Token::Integer(_) => true,
-            _ => false,
-        }) {
+        } else if let Some(&Token::Integer(i)) = self.next_if(|&t| matches!(t, Token::Integer(_))) {
             Ok(Factor::Constant(i))
-        } else if let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::Incremenet)) {
+        } else if let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::Increment)) {
             if let Some(Token::Identifier(id)) = self.next() {
                 Ok(Factor::Prefix(IncDec::Incremenet, id.clone()))
             } else {
@@ -897,21 +893,16 @@ pub struct PostfixID {
     pub postfix: Option<IncDec>,
 }
 
-impl ToTree<PostfixID> for Peekable<Iter<'_, Token>> {
-    fn to_tree(&mut self) -> Result<PostfixID, String> {
+impl ToTree<PostfixID> for Tokens<'_> {
+    fn to_tree(&mut self) -> Tree<PostfixID> {
         match self.next() {
             Some(Token::Identifier(id)) => {
-                if let Some(Token::Symbol(s)) = self.next_if(|&t| {
-                    t == &Token::Symbol(Symbol::Incremenet)
-                        || t == &Token::Symbol(Symbol::Decrement)
-                }) {
+                if let Some(Token::Symbol(s)) = self
+                    .next_if(|&t| matches!(t, Token::Symbol(Symbol::Increment | Symbol::Decrement)))
+                {
                     Ok(PostfixID {
                         id: id.clone(),
-                        postfix: Some(match s {
-                            Symbol::Incremenet => IncDec::Incremenet,
-                            Symbol::Decrement => IncDec::Decrement,
-                            _ => unreachable!(),
-                        }),
+                        postfix: Some(s.into()),
                     })
                 } else {
                     Ok(PostfixID {

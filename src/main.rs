@@ -7,53 +7,59 @@ use ast::*;
 mod generate;
 use generate::*;
 
-use std::env;
-use std::process::Command;
+use clap::arg;
 use std::{fs, io::Write};
 
-fn get_code_and_out_file() -> Result<(String, String), String> {
-    let args: Vec<String> = env::args().collect();
-    if args.len() != 3 {
-        return Err("Usage: compiler <filename> <out>".to_string());
-    }
-
-    let filename = &args[1];
-    let out = args[2].clone();
-
-    let code = fs::read_to_string(filename).expect("Failed to read from input file");
-
-    Ok((code, out))
+fn cli() -> clap::Command<'static> {
+    clap::Command::new("compiler")
+        .about("Compiler for a basic version of C/C++")
+        .version(clap::crate_version!())
+        .arg(arg!(input: -i <FILE> "Input file").required(true))
+        .arg(arg!(output: -o <FILE> "Output file").required(true))
+        .arg(arg!(assembly: -S "Output assembly").required(false))
+        .arg_required_else_help(true)
 }
 
-fn write_assembly(asm: String) {
-    let mut file = fs::File::create("assembly.s").expect("Failed to create file 'assembly.s'");
+fn write_assembly(asm: String, file: String) {
+    let mut file = fs::File::create(file).expect("Failed to create file 'assembly.s'");
     file.write_all(asm.as_bytes())
         .expect("Failed to write to file 'assembly.s'");
 }
 
 fn compile_assembly(out: String) {
-    let res = Command::new("gcc")
+    let res = std::process::Command::new("gcc")
         .arg("assembly.s")
         .arg("-o")
         .arg(out)
         .output()
         .expect("Failed to call gcc");
-    println!("{}", String::from_utf8(res.stderr).unwrap());
+    if !res.status.success() {
+        println!("gcc error: {}", String::from_utf8(res.stderr).unwrap());
+    }
 }
 
 fn main() -> Result<(), String> {
-    let (code, out) = get_code_and_out_file()?;
+    let args = cli().get_matches();
+
+    let code = fs::read_to_string(args.get_one::<String>("input").unwrap())
+        .expect("Failed to read from input file");
+    let out = args.get_one::<String>("output").unwrap();
 
     let res = lex(code)?;
     //println!("{:?}", res);
     let tree = ast(&res)?;
     //println!("{:#?}", tree);
     let asm = generate(&tree)?;
-    println!("{}", asm);
+    //println!("{}", asm);
 
-    write_assembly(asm);
-    compile_assembly(out);
-    //fs::remove_file("assembly.s").unwrap();
+    if args.contains_id("assembly") {
+        write_assembly(asm, out.clone());
+    } else {
+        write_assembly(asm, "assembly.s".to_string());
+        compile_assembly(out.clone());
+        fs::remove_file("assembly.s").unwrap();
+    }
 
+    println!("Successfully compiled to {}", out);
     Ok(())
 }

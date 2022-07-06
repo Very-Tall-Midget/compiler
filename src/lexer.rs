@@ -148,7 +148,7 @@ pub enum Symbol {
     BitAnd,     // &
     Assignment, // =
     Comma,      // ,
-    Incremenet, // ++
+    Increment,  // ++
     Decrement,  // --
     AddAssign,  // +=
     SubAssign,  // -=
@@ -195,7 +195,7 @@ impl Symbols for Peekable<Chars<'_>> {
             }
             '+' => {
                 if let Some(_) = self.next_if_eq(&'+') {
-                    Ok(Symbol::Incremenet)
+                    Ok(Symbol::Increment)
                 } else if let Some(_) = self.next_if_eq(&'=') {
                     Ok(Symbol::AddAssign)
                 } else {
