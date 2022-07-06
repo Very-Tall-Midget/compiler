@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
-    sync::atomic::{AtomicUsize, Ordering}
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 use super::ast::*;
@@ -16,7 +16,42 @@ pub fn generate(tree: &Program) -> Result<Assembly, String> {
         continue_label: None,
         break_label: None,
     };
-    tree.to_assembly(&mut ctx)
+    optimise(tree.to_assembly(&mut ctx)?)
+}
+
+fn optimise(asm: Assembly) -> Result<Assembly, String> {
+    let mut res = Assembly::new();
+
+    let mut last_mov_opt: Option<(String, String)> = None;
+    for line in asm.lines() {
+        let parts = line.clone().split_terminator(|c: char| c.is_whitespace() || c == ',');
+        let mut parts = parts.filter(|&part| !part.is_empty());
+        if let Some("mov") = parts.next() {
+            if let Some(last_mov) = &last_mov_opt {
+                if last_mov.1 == parts.next().unwrap() {
+                    last_mov_opt = Some((last_mov.0.clone(), parts.next().unwrap().to_string()));
+                } else {
+                    res.push_str(&format!("    movq {}, {}\n", last_mov.0, last_mov.1));
+                    let parts = line.clone().split_terminator(|c: char| c.is_whitespace() || c == ',');
+                    let mut parts = parts.filter(|&part| !part.is_empty());
+                    parts.next();
+                    let src = parts.next().unwrap().to_string();
+                    last_mov_opt = Some((src, parts.next().unwrap().to_string()));
+                }
+            } else {
+                let src = parts.next().unwrap().to_string();
+                last_mov_opt = Some((src, parts.next().unwrap().to_string()));
+            }
+        } else {
+            if let Some(last_mov) = last_mov_opt {
+                res.push_str(&format!("    movq {}, {}\n", last_mov.0, last_mov.1));
+                last_mov_opt = None;
+            }
+            res.push_str(&format!("{}\n", line));
+        }
+    }
+
+    Ok(res)
 }
 
 fn get_label() -> String {
@@ -27,7 +62,7 @@ fn get_label() -> String {
 #[derive(Debug, Clone)]
 struct Context {
     pub var_map: HashMap<String, String>, // identifier, location
-    pub func_map: HashMap<String, (i32, bool, CallingConv)>, // identifier, (number of parameters, is defined, calling convention)
+    pub func_map: HashMap<String, (usize, bool, CallingConv)>, // identifier, (number of parameters, is defined, calling convention)
     pub scope: HashSet<String>,
     pub stack_index: i32,
     pub break_label: Option<String>,
@@ -73,7 +108,7 @@ impl ToAssembly for Program {
                             func.name
                         ));
                     }
-    
+
                     if let Some(_) = func.body {
                         res.push_str(&format!("    .globl {}\n    .text\n", func.name));
                         if let Some(info) = ctx.func_map.get(&func.name) {
@@ -83,7 +118,7 @@ impl ToAssembly for Program {
                                     func.name
                                 ));
                             }
-                            if info.0 != func.params.len() as i32 {
+                            if info.0 != func.params.len() {
                                 return Err(format!(
                                     "[Code Generation]: Definition of '{}' disagrees with its declaration",
                                     func.name
@@ -92,7 +127,7 @@ impl ToAssembly for Program {
                         }
                         ctx.func_map.insert(
                             func.name.clone(),
-                            (func.params.len() as i32, true, CallingConv::Cdecl),
+                            (func.params.len(), true, CallingConv::Cdecl),
                         );
                         let mut ctx = Context {
                             var_map: ctx.var_map.clone(),
@@ -112,7 +147,7 @@ impl ToAssembly for Program {
                         res.push_str(&func.to_assembly(&mut ctx)?);
                     } else {
                         if let Some(info) = ctx.func_map.get(&func.name) {
-                            if info.0 != func.params.len() as i32 {
+                            if info.0 != func.params.len() {
                                 return Err(format!(
                                     "[Code Generation]: Conflicting declarations of '{}'",
                                     func.name
@@ -121,7 +156,7 @@ impl ToAssembly for Program {
                         } else {
                             ctx.func_map.insert(
                                 func.name.clone(),
-                                (func.params.len() as i32, false, func.call_conv.clone()),
+                                (func.params.len(), false, func.call_conv.clone()),
                             );
                         }
                     }
@@ -130,7 +165,10 @@ impl ToAssembly for Program {
         }
         for item in global_map {
             if !item.1 {
-                res.push_str(&format!("    .globl {0}\n    .bss\n    .align 4\n{0}:\n    .zero 4\n", item.0));
+                res.push_str(&format!(
+                    "    .globl {0}\n    .bss\n    .align 4\n{0}:\n    .zero 4\n",
+                    item.0
+                ));
             }
         }
 
@@ -144,10 +182,7 @@ impl ToAssembly for Program {
 
 impl ToAssembly for Function {
     fn to_assembly(&self, ctx: &mut Context) -> Result<Assembly, String> {
-        let mut res = format!(
-            "{0}:\n    push %rbp\n    mov %rsp, %rbp\n",
-            self.name
-        );
+        let mut res = format!("{0}:\n    push %rbp\n    mov %rsp, %rbp\n", self.name);
         ctx.stack_index = -8;
         res.push_str(
             &self
@@ -183,27 +218,47 @@ impl ToAssembly for Statement {
                     Ok(Assembly::new())
                 }
             }
-            Statement::If(expr1, statement1, statement2_opt) => {
-                let mut res = expr1.to_assembly(ctx)?;
-                if let Some(statement2) = statement2_opt {
-                    let int = get_label();
-                    let end = get_label();
-                    res.push_str(&format!("    cmp $0, %rax\n    je {}\n", int));
-                    res.push_str(&statement1.to_assembly(ctx)?);
-                    res.push_str(&format!("    jmp {}\n{}:\n", end, int));
-                    res.push_str(&statement2.to_assembly(ctx)?);
-                    res.push_str(&format!("{}:\n", end));
-                } else {
-                    let end = get_label();
-                    res.push_str(&format!("    cmp $0, %rax\n    je {}\n", end));
-                    res.push_str(&statement1.to_assembly(ctx)?);
-                    res.push_str(&format!("{}:\n", end));
+            Statement::If(expr, statement1, statement2_opt) => {
+                if let Ok(val) = expr.evaluate() {
+                    if val != 0 {
+                        if let Some(statement2) = statement2_opt {
+                            statement2.to_assembly(ctx)
+                        } else {
+                            Ok(Assembly::new())
+                        }
+                    } else {
+                        statement1.to_assembly(ctx)
+                    }
                 }
-
-                Ok(res)
+                else {
+                    let mut res = expr.to_assembly(ctx)?;
+                    if let Some(statement2) = statement2_opt {
+                        let int = get_label();
+                        let end = get_label();
+                        res.push_str(&format!("    cmp $0, %rax\n    je {}\n", int));
+                        res.push_str(&statement1.to_assembly(ctx)?);
+                        res.push_str(&format!("    jmp {}\n{}:\n", end, int));
+                        res.push_str(&statement2.to_assembly(ctx)?);
+                        res.push_str(&format!("{}:\n", end));
+                    } else {
+                        let end = get_label();
+                        res.push_str(&format!("    cmp $0, %rax\n    je {}\n", end));
+                        res.push_str(&statement1.to_assembly(ctx)?);
+                        res.push_str(&format!("{}:\n", end));
+                    }
+                    Ok(res)
+                }
             }
             Statement::Block(items) => items.to_assembly(ctx),
             Statement::For(init, condition, post_expr, statement) => {
+                if let Some(cond) = &condition.expr {
+                    if let Ok(val) = cond.evaluate() {
+                        if val == 0 {
+                            return Ok(Assembly::new());
+                        }
+                    }
+                }
+
                 let mut res = Assembly::new();
                 let mut new_ctx = ctx.clone();
                 let start = get_label();
@@ -228,6 +283,14 @@ impl ToAssembly for Statement {
                 Ok(res)
             }
             Statement::ForDecl(declerations, condition, post_expr, statement) => {
+                if let Some(cond) = &condition.expr {
+                    if let Ok(val) = cond.evaluate() {
+                        if val == 0 {
+                            return Ok(Assembly::new());
+                        }
+                    }
+                }
+
                 let mut res = Assembly::new();
                 let mut new_ctx = ctx.clone();
                 new_ctx.scope = HashSet::new();
@@ -251,11 +314,19 @@ impl ToAssembly for Statement {
                 res.push_str(&format!("    jmp {}\n{}:\n", start, end));
 
                 let bytes_to_deallocate = 8 * new_ctx.scope.len();
-                res.push_str(&format!("    add ${}, %rsp\n", bytes_to_deallocate));
+                if bytes_to_deallocate != 0 {
+                    res.push_str(&format!("    add ${}, %rsp\n", bytes_to_deallocate));
+                }
 
                 Ok(res)
             }
             Statement::While(expr, statement) => {
+                if let Ok(val) = expr.evaluate() {
+                    if val == 0 {
+                        return Ok(Assembly::new());
+                    }
+                }
+
                 let mut new_ctx = ctx.clone();
                 let start = get_label();
                 let end = get_label();
@@ -271,6 +342,19 @@ impl ToAssembly for Statement {
                 Ok(res)
             }
             Statement::Do(expr, statement) => {
+                if let Ok(val) = expr.evaluate() {
+                    if val == 0 {
+                        let mut new_ctx = ctx.clone();
+                        let label = get_label();
+                        new_ctx.break_label = Some(label.clone());
+                        new_ctx.continue_label = Some(label.clone());
+
+                        let mut res = statement.to_assembly(&mut new_ctx)?;
+                        res.push_str(&format!("{}:\n", label));
+                        return Ok(res);
+                    }
+                }
+
                 let mut new_ctx = ctx.clone();
                 let start = get_label();
                 let end = get_label();
@@ -332,8 +416,10 @@ impl ToAssembly for Block {
         }
 
         if !ret {
-            let bytes_to_deallocate = 8 * new_ctx.scope.len() as isize;
-            res.push_str(&format!("    add ${}, %rsp\n", bytes_to_deallocate));
+            let bytes_to_deallocate = 8 * new_ctx.scope.len();
+            if bytes_to_deallocate != 0 {
+                res.push_str(&format!("    add ${}, %rsp\n", bytes_to_deallocate));
+            }
         }
 
         Ok(res)
@@ -361,7 +447,7 @@ impl ToAssembly for Declarations {
                     res.push_str(&expr.to_assembly(ctx)?);
                     res.push_str("    push %rax\n");
                 } else {
-                    res.push_str("    push \n");
+                    res.push_str("    push $0\n");
                 }
                 ctx.stack_index -= 8;
             }
@@ -611,8 +697,20 @@ impl ToAssembly for EqExpr {
         let mut res = self.rel_expr.evaluate()?;
         for (eo, re) in &self.rel_exprs {
             res = match eo {
-                EqOp::IsEqual => if re.evaluate()? == res { 1 } else { 0 },
-                EqOp::NotEqual => if re.evaluate()? != res { 1 } else { 0 },
+                EqOp::IsEqual => {
+                    if re.evaluate()? == res {
+                        1
+                    } else {
+                        0
+                    }
+                }
+                EqOp::NotEqual => {
+                    if re.evaluate()? != res {
+                        1
+                    } else {
+                        0
+                    }
+                }
             };
         }
         Ok(res)
@@ -642,10 +740,34 @@ impl ToAssembly for RelExpr {
         let mut res = self.shift_expr.evaluate()?;
         for (ro, se) in &self.shift_exprs {
             res = match ro {
-                RelOp::LT => if res < se.evaluate()? { 1 } else { 0 },
-                RelOp::LTE => if res <= se.evaluate()? { 1 } else { 0 },
-                RelOp::GT => if res > se.evaluate()? { 1 } else { 0 },
-                RelOp::GTE => if res >= se.evaluate()? { 1 } else { 0 },
+                RelOp::LT => {
+                    if res < se.evaluate()? {
+                        1
+                    } else {
+                        0
+                    }
+                }
+                RelOp::LTE => {
+                    if res <= se.evaluate()? {
+                        1
+                    } else {
+                        0
+                    }
+                }
+                RelOp::GT => {
+                    if res > se.evaluate()? {
+                        1
+                    } else {
+                        0
+                    }
+                }
+                RelOp::GTE => {
+                    if res >= se.evaluate()? {
+                        1
+                    } else {
+                        0
+                    }
+                }
             };
         }
         Ok(res)
@@ -785,7 +907,7 @@ impl ToAssembly for Factor {
             }
             Factor::FunctionCall(id, args) => {
                 if let Some(func) = ctx.func_map.get(id) {
-                    if func.0 != args.len() as i32 {
+                    if func.0 != args.len() {
                         Err(format!(
                             "[Code Generation]: Incorrect number of arguments for '{}'",
                             id
@@ -799,7 +921,9 @@ impl ToAssembly for Factor {
                                     res.push_str("    push %rax\n");
                                 }
                                 res.push_str(&format!("    call {}\n", id));
-                                res.push_str(&format!("    add ${}, %rsp\n", args.len() * 8));
+                                if args.len() != 0 {
+                                    res.push_str(&format!("    add ${}, %rsp\n", args.len() * 8));
+                                }
                             }
                             CallingConv::Syscall => {
                                 if args.len() > 3 {
@@ -833,17 +957,19 @@ impl ToAssembly for Factor {
     fn evaluate(&self) -> Result<i32, String> {
         match self {
             Factor::Expr(expr) => expr.evaluate(),
-            Factor::UnaryOp(uo, factor) => {
-                match uo {
-                    UnaryOp::Negation => Ok(-factor.evaluate()?),
-                    UnaryOp::Complement => Ok(!factor.evaluate()?),
-                    UnaryOp::Not => Ok(if factor.evaluate()? == 0 { 1 } else { 0 }),
-                }
-            }
+            Factor::UnaryOp(uo, factor) => match uo {
+                UnaryOp::Negation => Ok(-factor.evaluate()?),
+                UnaryOp::Complement => Ok(!factor.evaluate()?),
+                UnaryOp::Not => Ok(if factor.evaluate()? == 0 { 1 } else { 0 }),
+            },
             Factor::Constant(i) => Ok(*i as i32),
             Factor::Identifier(postfix_id) => postfix_id.evaluate(),
-            Factor::Prefix(_, _) => Err("[Code Generation]: Cannot evaluate identifiers".to_string()),
-            Factor::FunctionCall(_, _) => Err("[Code Generation]: Cannot evaluate a function call".to_string()),
+            Factor::Prefix(_, _) => {
+                Err("[Code Generation]: Cannot evaluate identifiers".to_string())
+            }
+            Factor::FunctionCall(_, _) => {
+                Err("[Code Generation]: Cannot evaluate a function call".to_string())
+            }
         }
     }
 }

@@ -26,7 +26,7 @@ fn write_assembly(asm: String, file: String) {
         .expect("Failed to write to file 'assembly.s'");
 }
 
-fn compile_assembly(out: String) {
+fn compile_assembly(out: String) -> Result<(), String> {
     let res = std::process::Command::new("gcc")
         .arg("assembly.s")
         .arg("-o")
@@ -34,7 +34,12 @@ fn compile_assembly(out: String) {
         .output()
         .expect("Failed to call gcc");
     if !res.status.success() {
-        println!("gcc error: {}", String::from_utf8(res.stderr).unwrap());
+        Err(format!(
+            "gcc error: {}",
+            String::from_utf8(res.stderr).unwrap()
+        ))
+    } else {
+        Ok(())
     }
 }
 
@@ -56,7 +61,7 @@ fn main() -> Result<(), String> {
         write_assembly(asm, out.clone());
     } else {
         write_assembly(asm, "assembly.s".to_string());
-        compile_assembly(out.clone());
+        compile_assembly(out.clone())?;
         fs::remove_file("assembly.s").unwrap();
     }
 

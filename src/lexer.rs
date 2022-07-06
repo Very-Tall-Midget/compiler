@@ -55,7 +55,21 @@ impl ToTokens for Peekable<Chars<'_>> {
                     }
                 } else {
                     let s = self.to_symbol(c)?;
-                    out.push(Token::Symbol(s));
+                    if s == Symbol::Comment {
+                        loop {
+                            let next = self.peek();
+                            if let Some('\n') = next {
+                                self.next();
+                                break;
+                            }
+                            if let None = next {
+                                break;
+                            }
+                            self.next();
+                        }
+                    } else {
+                        out.push(Token::Symbol(s));
+                    }
                 }
             } else {
                 break;
@@ -121,6 +135,8 @@ impl Keywords for String {
 // SYMBOLS
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Symbol {
+    Comment, // //
+
     OpenBrace,  // {
     CloseBrace, // }
     OpenParen,  // (
@@ -212,6 +228,8 @@ impl Symbols for Peekable<Chars<'_>> {
             '/' => {
                 if let Some(_) = self.next_if_eq(&'=') {
                     Ok(Symbol::DivAssign)
+                } else if let Some(_) = self.next_if_eq(&'/') {
+                    Ok(Symbol::Comment)
                 } else {
                     Ok(Symbol::Div)
                 }
