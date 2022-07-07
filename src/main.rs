@@ -17,6 +17,7 @@ fn cli() -> clap::Command<'static> {
         .arg(arg!(input: -i <FILE> "Input file").required(true))
         .arg(arg!(output: -o <FILE> "Output file").required(true))
         .arg(arg!(assembly: -S "Output assembly").required(false))
+        .arg(arg!(no_optimise_assembly: -N "Don't optimise assembly").required(false))
         .arg_required_else_help(true)
 }
 
@@ -54,7 +55,7 @@ fn main() -> Result<(), String> {
     //println!("{:?}", res);
     let tree = ast(&res)?;
     //println!("{:#?}", tree);
-    let asm = generate(&tree)?;
+    let asm = generate(&tree, !args.contains_id("no_optimise_assembly"))?;
     //println!("{}", asm);
 
     if args.contains_id("assembly") {

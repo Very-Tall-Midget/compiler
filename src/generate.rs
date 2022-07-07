@@ -7,7 +7,7 @@ use super::ast::*;
 
 type Assembly = String;
 
-pub fn generate(tree: &Program) -> Result<Assembly, String> {
+pub fn generate(tree: &Program, optimise_assembly: bool) -> Result<Assembly, String> {
     let mut ctx = Context {
         var_map: HashMap::new(),
         func_map: HashMap::new(),
@@ -16,15 +16,21 @@ pub fn generate(tree: &Program) -> Result<Assembly, String> {
         continue_label: None,
         break_label: None,
     };
-    optimise(tree.to_assembly(&mut ctx)?)
+    if optimise_assembly {
+        optimise_asm(tree.to_assembly(&mut ctx)?)
+    } else {
+        tree.to_assembly(&mut ctx)
+    }
 }
 
-fn optimise(asm: Assembly) -> Result<Assembly, String> {
+fn optimise_asm(asm: Assembly) -> Result<Assembly, String> {
     let mut res = Assembly::new();
 
     let mut last_mov_opt: Option<(String, String)> = None;
     for line in asm.lines() {
-        let parts = line.clone().split_terminator(|c: char| c.is_whitespace() || c == ',');
+        let parts = line
+            .clone()
+            .split_terminator(|c: char| c.is_whitespace() || c == ',');
         let mut parts = parts.filter(|&part| !part.is_empty());
         if let Some("mov") = parts.next() {
             if let Some(last_mov) = &last_mov_opt {
@@ -32,7 +38,9 @@ fn optimise(asm: Assembly) -> Result<Assembly, String> {
                     last_mov_opt = Some((last_mov.0.clone(), parts.next().unwrap().to_string()));
                 } else {
                     res.push_str(&format!("    movq {}, {}\n", last_mov.0, last_mov.1));
-                    let parts = line.clone().split_terminator(|c: char| c.is_whitespace() || c == ',');
+                    let parts = line
+                        .clone()
+                        .split_terminator(|c: char| c.is_whitespace() || c == ',');
                     let mut parts = parts.filter(|&part| !part.is_empty());
                     parts.next();
                     let src = parts.next().unwrap().to_string();
@@ -229,8 +237,7 @@ impl ToAssembly for Statement {
                     } else {
                         statement1.to_assembly(ctx)
                     }
-                }
-                else {
+                } else {
                     let mut res = expr.to_assembly(ctx)?;
                     if let Some(statement2) = statement2_opt {
                         let int = get_label();
