@@ -68,7 +68,7 @@ fn get_label() -> String {
 }
 
 #[derive(Debug, Clone)]
-struct Context {
+pub struct Context {
     pub var_map: HashMap<String, String>, // identifier, location
     pub func_map: HashMap<String, (usize, bool, CallingConv)>, // identifier, (number of parameters, is defined, calling convention)
     pub scope: HashSet<String>,
@@ -77,8 +77,18 @@ struct Context {
     pub continue_label: Option<String>,
 }
 
-trait ToAssembly {
+#[derive(Debug, Clone)]
+pub struct CheckContext {
+    pub var_map: HashSet<String>,
+    pub func_map: HashMap<String, (usize, bool, CallingConv)>, // identifier, (number of parameters, is defined, calling convention)
+    pub scope: HashSet<String>,
+    pub break_label: bool,
+    pub continue_label: bool,
+}
+
+pub trait ToAssembly {
     fn to_assembly(&self, ctx: &mut Context) -> Result<Assembly, String>;
+    fn check(&self, ctx: &mut CheckContext) -> Result<(), String>;
     fn evaluate(&self) -> Result<i32, String>;
 }
 
@@ -183,6 +193,92 @@ impl ToAssembly for Program {
         Ok(res)
     }
 
+    fn check(&self, ctx: &mut CheckContext) -> Result<(), String> {
+        let mut global_map: HashMap<String, bool> = HashMap::new();
+        for item in &self.items {
+            match item {
+                ProgramItems::Declarations(declerations) => {
+                    for (id, expr) in &declerations.declarations {
+                        if ctx.func_map.contains_key(id) {
+                            return Err(format!("[Code Generation]: Global variable '{}' already defined as a function", id));
+                        }
+                        ctx.var_map.insert(id.clone());
+                        if let Some(expr) = expr {
+                            if *global_map.get(id).unwrap_or(&false) {
+                                return Err(format!(
+                                    "[Code Generation]: '{}' defined more than once",
+                                    id
+                                ));
+                            } else {
+                                expr.evaluate()?; // Check the value is a constant
+                                global_map.insert(id.clone(), true);
+                            }
+                        } else {
+                            global_map.insert(id.clone(), false);
+                        }
+                    }
+                }
+                ProgramItems::Function(func) => {
+                    if global_map.contains_key(&func.name) {
+                        return Err(format!(
+                            "[Code Generation]: '{}' is already defined as a global variable",
+                            func.name
+                        ));
+                    }
+
+                    if let Some(_) = func.body {
+                        if let Some(info) = ctx.func_map.get(&func.name) {
+                            if info.1 {
+                                return Err(format!(
+                                    "[Code Generation]: Function '{}' is already defined",
+                                    func.name
+                                ));
+                            }
+                            if info.0 != func.params.len() {
+                                return Err(format!(
+                                    "[Code Generation]: Definition of '{}' disagrees with its declaration",
+                                    func.name
+                                ));
+                            }
+                        }
+                        ctx.func_map.insert(
+                            func.name.clone(),
+                            (func.params.len(), true, CallingConv::Cdecl),
+                        );
+                        let mut ctx = CheckContext {
+                            var_map: ctx.var_map.clone(),
+                            func_map: ctx.func_map.clone(),
+                            scope: HashSet::new(),
+                            break_label: false,
+                            continue_label: false,
+                        };
+                        for param in &func.params {
+                            ctx.var_map.insert(param.clone());
+                            ctx.scope.insert(param.clone());
+                        }
+                        func.check(&mut ctx)?;
+                    } else {
+                        if let Some(info) = ctx.func_map.get(&func.name) {
+                            if info.0 != func.params.len() {
+                                return Err(format!(
+                                    "[Code Generation]: Conflicting declarations of '{}'",
+                                    func.name
+                                ));
+                            }
+                        } else {
+                            ctx.func_map.insert(
+                                func.name.clone(),
+                                (func.params.len(), false, func.call_conv.clone()),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     fn evaluate(&self) -> Result<i32, String> {
         Err("[Code Generation]: Cannot evaluate a program".to_string())
     }
@@ -204,6 +300,10 @@ impl ToAssembly for Function {
         res.push_str("    mov $0, %rax\n    mov %rbp, %rsp\n    pop %rbp\n    ret\n");
 
         Ok(res)
+    }
+
+    fn check(&self, ctx: &mut CheckContext) -> Result<(), String> {
+        self.body.as_ref().unwrap().check(ctx)
     }
 
     fn evaluate(&self) -> Result<i32, String> {
@@ -230,12 +330,12 @@ impl ToAssembly for Statement {
                 if let Ok(val) = expr.evaluate() {
                     if val != 0 {
                         if let Some(statement2) = statement2_opt {
-                            statement2.to_assembly(ctx)
+                            statement2.borrow().to_assembly(ctx)
                         } else {
                             Ok(Assembly::new())
                         }
                     } else {
-                        statement1.to_assembly(ctx)
+                        statement1.borrow().to_assembly(ctx)
                     }
                 } else {
                     let mut res = expr.to_assembly(ctx)?;
@@ -243,14 +343,14 @@ impl ToAssembly for Statement {
                         let int = get_label();
                         let end = get_label();
                         res.push_str(&format!("    cmp $0, %rax\n    je {}\n", int));
-                        res.push_str(&statement1.to_assembly(ctx)?);
+                        res.push_str(&statement1.borrow().to_assembly(ctx)?);
                         res.push_str(&format!("    jmp {}\n{}:\n", end, int));
-                        res.push_str(&statement2.to_assembly(ctx)?);
+                        res.push_str(&statement2.borrow().to_assembly(ctx)?);
                         res.push_str(&format!("{}:\n", end));
                     } else {
                         let end = get_label();
                         res.push_str(&format!("    cmp $0, %rax\n    je {}\n", end));
-                        res.push_str(&statement1.to_assembly(ctx)?);
+                        res.push_str(&statement1.borrow().to_assembly(ctx)?);
                         res.push_str(&format!("{}:\n", end));
                     }
                     Ok(res)
@@ -282,7 +382,7 @@ impl ToAssembly for Statement {
                     res.push_str("    mov $1, %rax\n");
                 }
                 res.push_str(&format!("    cmp $0, %rax\n    je {}\n", end));
-                res.push_str(&statement.to_assembly(&mut new_ctx)?);
+                res.push_str(&statement.borrow().to_assembly(&mut new_ctx)?);
                 res.push_str(&format!("{}:\n", post_expr_label));
                 res.push_str(&post_expr.to_assembly(&mut new_ctx)?);
                 res.push_str(&format!("    jmp {}\n{}:\n", start, end));
@@ -315,7 +415,7 @@ impl ToAssembly for Statement {
                     res.push_str("    mov $1, %rax\n");
                 }
                 res.push_str(&format!("    cmp $0, %rax\n    je {}\n", end));
-                res.push_str(&statement.to_assembly(&mut new_ctx)?);
+                res.push_str(&statement.borrow().to_assembly(&mut new_ctx)?);
                 res.push_str(&format!("{}:\n", post_expr_label));
                 res.push_str(&post_expr.to_assembly(&mut new_ctx)?);
                 res.push_str(&format!("    jmp {}\n{}:\n", start, end));
@@ -343,7 +443,7 @@ impl ToAssembly for Statement {
                 let mut res = format!("{}:\n", start);
                 res.push_str(&expr.to_assembly(&mut new_ctx)?);
                 res.push_str(&format!("    cmp $0, %rax\n    je {}\n", end));
-                res.push_str(&statement.to_assembly(&mut new_ctx)?);
+                res.push_str(&statement.borrow().to_assembly(&mut new_ctx)?);
                 res.push_str(&format!("    jmp {}\n{}:\n", start, end));
 
                 Ok(res)
@@ -356,7 +456,7 @@ impl ToAssembly for Statement {
                         new_ctx.break_label = Some(label.clone());
                         new_ctx.continue_label = Some(label.clone());
 
-                        let mut res = statement.to_assembly(&mut new_ctx)?;
+                        let mut res = statement.borrow().to_assembly(&mut new_ctx)?;
                         res.push_str(&format!("{}:\n", label));
                         return Ok(res);
                     }
@@ -369,7 +469,7 @@ impl ToAssembly for Statement {
                 new_ctx.continue_label = Some(start.clone());
 
                 let mut res = format!("{}:\n", start);
-                res.push_str(&statement.to_assembly(&mut new_ctx)?);
+                res.push_str(&statement.borrow().to_assembly(&mut new_ctx)?);
                 res.push_str(&expr.to_assembly(&mut new_ctx)?);
                 res.push_str(&format!("    cmp $0, %rax\n    jne {}\n{}:\n", start, end));
 
@@ -392,6 +492,84 @@ impl ToAssembly for Statement {
         }
     }
 
+    fn check(&self, ctx: &mut CheckContext) -> Result<(), String> {
+        match self {
+            Statement::Return(expr) => expr.check(ctx),
+            Statement::Expr(expr) => {
+                if let Some(expr) = &expr.expr {
+                    expr.check(ctx)
+                } else {
+                    Ok(())
+                }
+            }
+            Statement::If(expr, statement1, statement2_opt) => {
+                expr.check(ctx)?;
+                statement1.borrow_mut().check(ctx)?;
+                if let Some(statement2) = statement2_opt {
+                    statement2.borrow_mut().check(ctx)
+                } else {
+                    Ok(())
+                }
+            }
+            Statement::Block(items) => items.check(ctx),
+            Statement::For(init, condition, post_expr, statement) => {
+                let mut new_ctx = ctx.clone();
+                new_ctx.break_label = true;
+                new_ctx.continue_label = true;
+
+                init.check(&mut new_ctx)?;
+                if let Some(condition) = &condition.expr {
+                    condition.check(&mut new_ctx)?;
+                }
+                statement.borrow_mut().check(&mut new_ctx)?;
+                post_expr.check(&mut new_ctx)
+            }
+            Statement::ForDecl(declerations, condition, post_expr, statement) => {
+                let mut new_ctx = ctx.clone();
+                new_ctx.scope = HashSet::new();
+                new_ctx.break_label = true;
+                new_ctx.continue_label = true;
+
+                declerations.check(&mut new_ctx)?;
+                if let Some(condition) = &condition.expr {
+                    condition.check(&mut new_ctx)?;
+                }
+                statement.borrow_mut().check(&mut new_ctx)?;
+                post_expr.check(&mut new_ctx)
+            }
+            Statement::While(expr, statement) => {
+                let mut new_ctx = ctx.clone();
+                new_ctx.break_label = true;
+                new_ctx.continue_label = true;
+
+                expr.check(&mut new_ctx)?;
+                statement.borrow_mut().check(&mut new_ctx)
+            }
+            Statement::Do(expr, statement) => {
+                let mut new_ctx = ctx.clone();
+                new_ctx.break_label = true;
+                new_ctx.continue_label = true;
+
+                statement.borrow_mut().check(&mut new_ctx)?;
+                expr.check(&mut new_ctx)
+            }
+            Statement::Break => {
+                if !ctx.break_label {
+                    Err("[Code Generation]: Break statement not in loop".to_string())
+                } else {
+                    Ok(())
+                }
+            }
+            Statement::Continue => {
+                if ctx.continue_label {
+                    Err("[Code Generation]: Continue statement not in loop".to_string())
+                } else {
+                    Ok(())
+                }
+            }
+        }
+    }
+
     fn evaluate(&self) -> Result<i32, String> {
         if let Statement::Expr(expr) = self {
             expr.evaluate()
@@ -406,13 +584,9 @@ impl ToAssembly for Block {
         let mut res = Assembly::new();
         let mut new_ctx = ctx.clone();
         new_ctx.scope = HashSet::new();
-        let mut ret = false;
         for item in &self.items {
             res.push_str(&match item {
                 BlockItem::Statement(s) => {
-                    if let Statement::Return(_) = s {
-                        ret = true;
-                    }
                     let mut temp_ctx = new_ctx.clone();
                     let r = s.to_assembly(&mut temp_ctx)?;
                     new_ctx.scope = temp_ctx.scope;
@@ -422,14 +596,29 @@ impl ToAssembly for Block {
             });
         }
 
-        if !ret {
-            let bytes_to_deallocate = 8 * new_ctx.scope.len();
-            if bytes_to_deallocate != 0 {
-                res.push_str(&format!("    add ${}, %rsp\n", bytes_to_deallocate));
-            }
+        let bytes_to_deallocate = 8 * new_ctx.scope.len();
+        if bytes_to_deallocate != 0 {
+            res.push_str(&format!("    add ${}, %rsp\n", bytes_to_deallocate));
         }
 
         Ok(res)
+    }
+
+    fn check(&self, ctx: &mut CheckContext) -> Result<(), String> {
+        let mut new_ctx = ctx.clone();
+        new_ctx.scope = HashSet::new();
+        for item in &self.items {
+            match item {
+                BlockItem::Statement(s) => {
+                    let mut temp_ctx = new_ctx.clone();
+                    s.check(&mut temp_ctx)?;
+                    new_ctx.scope = temp_ctx.scope;
+                }
+                BlockItem::Declaration(d) => d.check(&mut new_ctx)?,
+            }
+        }
+
+        Ok(())
     }
 
     fn evaluate(&self) -> Result<i32, String> {
@@ -462,6 +651,24 @@ impl ToAssembly for Declarations {
         Ok(res)
     }
 
+    fn check(&self, ctx: &mut CheckContext) -> Result<(), String> {
+        for (id, expr_opt) in &self.declarations {
+            if ctx.scope.contains(id) {
+                return Err(format!(
+                    "[Code Generation]: Variable '{}' already exists in this scope",
+                    id
+                ));
+            } else {
+                ctx.var_map.insert(id.clone());
+                ctx.scope.insert(id.clone());
+                if let Some(expr) = expr_opt {
+                    expr.check(ctx)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn evaluate(&self) -> Result<i32, String> {
         Err("[Code Generation]: Cannot evaluate declerations".to_string())
     }
@@ -473,6 +680,14 @@ impl ToAssembly for ExprOpt {
             expr.to_assembly(ctx)
         } else {
             Ok(Assembly::new())
+        }
+    }
+
+    fn check(&self, ctx: &mut CheckContext) -> Result<(), String> {
+        if let Some(expr) = &self.expr {
+            expr.check(ctx)
+        } else {
+            Ok(())
         }
     }
 
@@ -489,7 +704,7 @@ impl ToAssembly for Expr {
     fn to_assembly(&self, ctx: &mut Context) -> Result<Assembly, String> {
         match self {
             Expr::Assignment(id, assign_op, expr) => {
-                let mut res = expr.to_assembly(ctx)?;
+                let mut res = expr.borrow().to_assembly(ctx)?;
                 if let Some(loc) = ctx.var_map.get(id) {
                     match assign_op {
                         AssignmentOp::Assign => {}
@@ -521,6 +736,20 @@ impl ToAssembly for Expr {
         }
     }
 
+    fn check(&self, ctx: &mut CheckContext) -> Result<(), String> {
+        match self {
+            Expr::Assignment(id, _, expr) => {
+                expr.borrow_mut().check(ctx)?;
+                if ctx.var_map.contains(id) {
+                    Ok(())
+                } else {
+                    Err(format!("[Code Generation]: Undeclared variable '{}'", id))
+                }
+            }
+            Expr::ConditionalExpr(ce) => ce.check(ctx),
+        }
+    }
+
     fn evaluate(&self) -> Result<i32, String> {
         if let Expr::ConditionalExpr(ce) = self {
             ce.evaluate()
@@ -537,21 +766,31 @@ impl ToAssembly for ConditionalExpr {
             let int = get_label();
             let end = get_label();
             res.push_str(&format!("    cmp $0, %rax\n    je {}\n", int));
-            res.push_str(&expr1.to_assembly(ctx)?);
+            res.push_str(&expr1.borrow().to_assembly(ctx)?);
             res.push_str(&format!("    jmp {}\n{}:\n", end, int));
-            res.push_str(&expr2.to_assembly(ctx)?);
+            res.push_str(&expr2.borrow().to_assembly(ctx)?);
             res.push_str(&format!("{}:\n", end));
         }
 
         Ok(res)
     }
 
+    fn check(&self, ctx: &mut CheckContext) -> Result<(), String> {
+        self.log_or_expr.check(ctx)?;
+        if let Some((expr1, expr2)) = &self.options {
+            expr1.borrow_mut().check(ctx)?;
+            expr2.borrow_mut().check(ctx)?;
+        }
+
+        Ok(())
+    }
+
     fn evaluate(&self) -> Result<i32, String> {
         if let Some((expr1, expr2)) = &self.options {
             if self.log_or_expr.evaluate()? != 0 {
-                expr1.evaluate()
+                expr1.borrow().evaluate()
             } else {
-                expr2.evaluate()
+                expr2.borrow().evaluate()
             }
         } else {
             self.log_or_expr.evaluate()
@@ -576,6 +815,14 @@ impl ToAssembly for LogOrExpr {
             ));
         }
         Ok(res)
+    }
+
+    fn check(&self, ctx: &mut CheckContext) -> Result<(), String> {
+        self.log_and_expr.check(ctx)?;
+        for lae in &self.log_and_exprs {
+            lae.check(ctx)?;
+        }
+        Ok(())
     }
 
     fn evaluate(&self) -> Result<i32, String> {
@@ -610,6 +857,14 @@ impl ToAssembly for LogAndExpr {
         Ok(res)
     }
 
+    fn check(&self, ctx: &mut CheckContext) -> Result<(), String> {
+        self.bit_or_expr.check(ctx)?;
+        for boe in &self.bit_or_exprs {
+            boe.check(ctx)?;
+        }
+        Ok(())
+    }
+
     fn evaluate(&self) -> Result<i32, String> {
         let mut res = self.bit_or_expr.evaluate()?;
         for boe in &self.bit_or_exprs {
@@ -634,6 +889,14 @@ impl ToAssembly for BitOrExpr {
         Ok(res)
     }
 
+    fn check(&self, ctx: &mut CheckContext) -> Result<(), String> {
+        self.bit_xor_expr.check(ctx)?;
+        for bxe in &self.bit_xor_exprs {
+            bxe.check(ctx)?;
+        }
+        Ok(())
+    }
+
     fn evaluate(&self) -> Result<i32, String> {
         let mut res = self.bit_xor_expr.evaluate()?;
         for bxe in &self.bit_xor_exprs {
@@ -654,6 +917,14 @@ impl ToAssembly for BitXorExpr {
         Ok(res)
     }
 
+    fn check(&self, ctx: &mut CheckContext) -> Result<(), String> {
+        self.bit_and_expr.check(ctx)?;
+        for bae in &self.bit_and_exprs {
+            bae.check(ctx)?;
+        }
+        Ok(())
+    }
+
     fn evaluate(&self) -> Result<i32, String> {
         let mut res = self.bit_and_expr.evaluate()?;
         for bae in &self.bit_and_exprs {
@@ -672,6 +943,14 @@ impl ToAssembly for BitAndExpr {
             res.push_str("    pop %rcx\n    and %rcx, %rax\n");
         }
         Ok(res)
+    }
+
+    fn check(&self, ctx: &mut CheckContext) -> Result<(), String> {
+        self.eq_expr.check(ctx)?;
+        for ee in &self.eq_exprs {
+            ee.check(ctx)?;
+        }
+        Ok(())
     }
 
     fn evaluate(&self) -> Result<i32, String> {
@@ -698,6 +977,14 @@ impl ToAssembly for EqExpr {
             ));
         }
         Ok(res)
+    }
+
+    fn check(&self, ctx: &mut CheckContext) -> Result<(), String> {
+        self.rel_expr.check(ctx)?;
+        for (_, re) in &self.rel_exprs {
+            re.check(ctx)?;
+        }
+        Ok(())
     }
 
     fn evaluate(&self) -> Result<i32, String> {
@@ -741,6 +1028,14 @@ impl ToAssembly for RelExpr {
             ));
         }
         Ok(res)
+    }
+
+    fn check(&self, ctx: &mut CheckContext) -> Result<(), String> {
+        self.shift_expr.check(ctx)?;
+        for (_, se) in &self.shift_exprs {
+            se.check(ctx)?;
+        }
+        Ok(())
     }
 
     fn evaluate(&self) -> Result<i32, String> {
@@ -798,6 +1093,14 @@ impl ToAssembly for ShiftExpr {
         Ok(res)
     }
 
+    fn check(&self, ctx: &mut CheckContext) -> Result<(), String> {
+        self.add_expr.check(ctx)?;
+        for (_, ae) in &self.add_exprs {
+            ae.check(ctx)?;
+        }
+        Ok(())
+    }
+
     fn evaluate(&self) -> Result<i32, String> {
         let mut res = self.add_expr.evaluate()?;
         for (so, ae) in &self.add_exprs {
@@ -828,6 +1131,14 @@ impl ToAssembly for AddExpr {
             }
         }
         Ok(res)
+    }
+
+    fn check(&self, ctx: &mut CheckContext) -> Result<(), String> {
+        self.term.check(ctx)?;
+        for term in &self.terms {
+            term.1.check(ctx)?;
+        }
+        Ok(())
     }
 
     fn evaluate(&self) -> Result<i32, String> {
@@ -867,6 +1178,14 @@ impl ToAssembly for Term {
         Ok(res)
     }
 
+    fn check(&self, ctx: &mut CheckContext) -> Result<(), String> {
+        self.factor.check(ctx)?;
+        for factor in &self.factors {
+            factor.1.check(ctx)?;
+        }
+        Ok(())
+    }
+
     fn evaluate(&self) -> Result<i32, String> {
         let mut res = self.factor.evaluate()?;
         for (bo, factor) in &self.factors {
@@ -884,9 +1203,9 @@ impl ToAssembly for Term {
 impl ToAssembly for Factor {
     fn to_assembly(&self, ctx: &mut Context) -> Result<Assembly, String> {
         match self {
-            Factor::Expr(expr) => expr.to_assembly(ctx),
+            Factor::Expr(expr) => expr.borrow().to_assembly(ctx),
             Factor::UnaryOp(uo, factor) => {
-                let mut res = factor.to_assembly(ctx)?;
+                let mut res = factor.borrow().to_assembly(ctx)?;
                 match uo {
                     UnaryOp::Negation => res.push_str("    neg %rax\n"),
                     UnaryOp::Complement => res.push_str("    not %rax\n"),
@@ -961,13 +1280,69 @@ impl ToAssembly for Factor {
         }
     }
 
+    fn check(&self, ctx: &mut CheckContext) -> Result<(), String> {
+        match self {
+            Factor::Expr(expr) => expr.borrow_mut().check(ctx),
+            Factor::UnaryOp(_, factor) => factor.borrow_mut().check(ctx),
+            Factor::Constant(_) => Ok(()),
+            Factor::Identifier(postfix_id) => postfix_id.check(ctx),
+            Factor::Prefix(_, id) => {
+                if ctx.var_map.contains(id) {
+                    Ok(())
+                } else {
+                    Err(format!("[Code Generation]: Undeclared variable '{}'", id))
+                }
+            }
+            Factor::FunctionCall(id, args) => {
+                if let Some(func) = ctx.func_map.get(id) {
+                    if func.0 != args.len() {
+                        Err(format!(
+                            "[Code Generation]: Incorrect number of arguments for '{}'",
+                            id
+                        ))
+                    } else {
+                        match func.2 {
+                            CallingConv::Cdecl => {
+                                for arg in args.iter().rev() {
+                                    arg.check(ctx)?;
+                                }
+                            }
+                            CallingConv::Syscall => {
+                                if args.len() > 3 {
+                                    return Err("[Code Generation]: __syscall calls with more than 3 arguments are not supported".to_string());
+                                }
+                                if let Some(arg1) = args.get(0) {
+                                    arg1.check(ctx)?;
+                                    if let Some(arg2) = args.get(1) {
+                                        arg2.check(ctx)?;
+                                        if let Some(arg3) = args.get(2) {
+                                            arg3.check(ctx)?;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        Ok(())
+                    }
+                } else {
+                    Err(format!("[Code Generation]: Unknown function '{}'", id))
+                }
+            }
+        }
+    }
+
     fn evaluate(&self) -> Result<i32, String> {
         match self {
-            Factor::Expr(expr) => expr.evaluate(),
+            Factor::Expr(expr) => expr.borrow().evaluate(),
             Factor::UnaryOp(uo, factor) => match uo {
-                UnaryOp::Negation => Ok(-factor.evaluate()?),
-                UnaryOp::Complement => Ok(!factor.evaluate()?),
-                UnaryOp::Not => Ok(if factor.evaluate()? == 0 { 1 } else { 0 }),
+                UnaryOp::Negation => Ok(-factor.borrow().evaluate()?),
+                UnaryOp::Complement => Ok(!factor.borrow().evaluate()?),
+                UnaryOp::Not => Ok(if factor.borrow().evaluate()? == 0 {
+                    1
+                } else {
+                    0
+                }),
             },
             Factor::Constant(i) => Ok(*i as i32),
             Factor::Identifier(postfix_id) => postfix_id.evaluate(),
@@ -996,6 +1371,17 @@ impl ToAssembly for PostfixID {
             } else {
                 Ok(format!("    mov {}, %rax\n", loc))
             }
+        } else {
+            Err(format!(
+                "[Code Generation]: Undeclared variable '{}'",
+                self.id
+            ))
+        }
+    }
+
+    fn check(&self, ctx: &mut CheckContext) -> Result<(), String> {
+        if ctx.var_map.contains(&self.id) {
+            Ok(())
         } else {
             Err(format!(
                 "[Code Generation]: Undeclared variable '{}'",

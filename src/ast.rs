@@ -1,4 +1,4 @@
-use std::{iter::Peekable, rc::Rc, slice::Iter};
+use std::{cell::RefCell, iter::Peekable, rc::Rc, slice::Iter};
 
 use super::lexer::*;
 
@@ -171,12 +171,12 @@ impl ToTree<BlockItem> for Tokens<'_> {
 pub enum Statement {
     Return(Expr),
     Expr(ExprOpt),
-    If(Expr, Rc<Statement>, Option<Rc<Statement>>),
+    If(Expr, Rc<RefCell<Statement>>, Option<Rc<RefCell<Statement>>>),
     Block(Block),
-    For(ExprOpt, ExprOpt, ExprOpt, Rc<Statement>),
-    ForDecl(Declarations, ExprOpt, ExprOpt, Rc<Statement>),
-    While(Expr, Rc<Statement>),
-    Do(Expr, Rc<Statement>),
+    For(ExprOpt, ExprOpt, ExprOpt, Rc<RefCell<Statement>>),
+    ForDecl(Declarations, ExprOpt, ExprOpt, Rc<RefCell<Statement>>),
+    While(Expr, Rc<RefCell<Statement>>),
+    Do(Expr, Rc<RefCell<Statement>>),
     Break,
     Continue,
 }
@@ -194,12 +194,12 @@ impl ToTree<Statement> for Tokens<'_> {
             if let Some(Token::Symbol(Symbol::OpenParen)) = self.next() {
                 let expr = self.to_tree()?;
                 if let Some(Token::Symbol(Symbol::CloseParen)) = self.next() {
-                    let statement = Rc::new(self.to_tree()?);
+                    let statement = Rc::new(RefCell::new(self.to_tree()?));
                     if let Some(_) = self.next_if_eq(&&Token::Keyword(Keyword::Else)) {
                         Ok(Statement::If(
                             expr,
                             statement,
-                            Some(Rc::new(self.to_tree()?)),
+                            Some(Rc::new(RefCell::new(self.to_tree()?))),
                         ))
                     } else {
                         Ok(Statement::If(expr, statement, None))
@@ -221,7 +221,7 @@ impl ToTree<Statement> for Tokens<'_> {
                         let expr2_cp: ExprOptCloseParen = self.to_tree()?;
                         let expr2 = expr2_cp.to_expr_opt();
                         if let Some(Token::Symbol(Symbol::CloseParen)) = self.next() {
-                            let statement = Rc::new(self.to_tree()?);
+                            let statement = Rc::new(RefCell::new(self.to_tree()?));
                             Ok(Statement::ForDecl(declerations, expr1, expr2, statement))
                         } else {
                             Err("[Parser]: Expected ')'".to_string())
@@ -237,7 +237,7 @@ impl ToTree<Statement> for Tokens<'_> {
                             let expr3_cp: ExprOptCloseParen = self.to_tree()?;
                             let expr3 = expr3_cp.to_expr_opt();
                             if let Some(Token::Symbol(Symbol::CloseParen)) = self.next() {
-                                let statement = Rc::new(self.to_tree()?);
+                                let statement = Rc::new(RefCell::new(self.to_tree()?));
                                 Ok(Statement::For(expr1, expr2, expr3, statement))
                             } else {
                                 Err("[Parser]: Expected ')'".to_string())
@@ -256,7 +256,7 @@ impl ToTree<Statement> for Tokens<'_> {
             if let Some(Token::Symbol(Symbol::OpenParen)) = self.next() {
                 let expr = self.to_tree()?;
                 if let Some(Token::Symbol(Symbol::CloseParen)) = self.next() {
-                    let statement = Rc::new(self.to_tree()?);
+                    let statement = Rc::new(RefCell::new(self.to_tree()?));
                     Ok(Statement::While(expr, statement))
                 } else {
                     Err("[Parser]: Expected ')'".to_string())
@@ -265,7 +265,7 @@ impl ToTree<Statement> for Tokens<'_> {
                 Err("[Parser]: Expected '('".to_string())
             }
         } else if let Some(_) = self.next_if_eq(&&Token::Keyword(Keyword::Do)) {
-            let statement = Rc::new(self.to_tree()?);
+            let statement = Rc::new(RefCell::new(self.to_tree()?));
             if let Some(Token::Keyword(Keyword::While)) = self.next() {
                 if let Some(Token::Symbol(Symbol::OpenParen)) = self.next() {
                     let expr = self.to_tree()?;
@@ -420,7 +420,7 @@ impl ExprOptCloseParen {
 // EXPRESSION
 #[derive(Debug, Clone)]
 pub enum Expr {
-    Assignment(String, AssignmentOp, Rc<Expr>),
+    Assignment(String, AssignmentOp, Rc<RefCell<Expr>>),
     ConditionalExpr(ConditionalExpr),
 }
 
@@ -479,7 +479,7 @@ impl ToTree<Expr> for Tokens<'_> {
                 Ok(Expr::Assignment(
                     id.clone(),
                     s.into(),
-                    Rc::new(self.to_tree()?),
+                    Rc::new(RefCell::new(self.to_tree()?)),
                 ))
             } else {
                 Ok(Expr::ConditionalExpr(self.to_tree()?))
@@ -494,16 +494,16 @@ impl ToTree<Expr> for Tokens<'_> {
 #[derive(Debug, Clone)]
 pub struct ConditionalExpr {
     pub log_or_expr: LogOrExpr,
-    pub options: Option<(Rc<Expr>, Rc<Expr>)>,
+    pub options: Option<(Rc<RefCell<Expr>>, Rc<RefCell<Expr>>)>,
 }
 
 impl ToTree<ConditionalExpr> for Tokens<'_> {
     fn to_tree(&mut self) -> Tree<ConditionalExpr> {
         let log_or_expr = self.to_tree()?;
         if let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::QMark)) {
-            let expr1 = self.to_tree()?;
+            let expr1 = RefCell::new(self.to_tree()?);
             if let Some(Token::Symbol(Symbol::Colon)) = self.next() {
-                let expr2 = self.to_tree()?;
+                let expr2 = RefCell::new(self.to_tree()?);
                 Ok(ConditionalExpr {
                     log_or_expr,
                     options: Some((Rc::new(expr1), Rc::new(expr2))),
@@ -794,8 +794,8 @@ impl ToTree<Term> for Tokens<'_> {
 // FACTOR
 #[derive(Debug, Clone)]
 pub enum Factor {
-    Expr(Rc<Expr>),
-    UnaryOp(UnaryOp, Rc<Factor>),
+    Expr(Rc<RefCell<Expr>>),
+    UnaryOp(UnaryOp, Rc<RefCell<Factor>>),
     Constant(u32),
     Identifier(PostfixID),
     Prefix(IncDec, String),
@@ -820,21 +820,27 @@ pub enum UnaryOp {
 impl ToTree<Factor> for Tokens<'_> {
     fn to_tree(&mut self) -> Tree<Factor> {
         if let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::OpenParen)) {
-            let expr = self.to_tree()?;
+            let expr = RefCell::new(self.to_tree()?);
             if let Some(Token::Symbol(Symbol::CloseParen)) = self.next() {
                 Ok(Factor::Expr(Rc::new(expr)))
             } else {
                 Err("[Parser]: Expected ')'".to_string())
             }
         } else if let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::Not)) {
-            Ok(Factor::UnaryOp(UnaryOp::Not, Rc::new(self.to_tree()?)))
+            Ok(Factor::UnaryOp(
+                UnaryOp::Not,
+                Rc::new(RefCell::new(self.to_tree()?)),
+            ))
         } else if let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::Complement)) {
             Ok(Factor::UnaryOp(
                 UnaryOp::Complement,
-                Rc::new(self.to_tree()?),
+                Rc::new(RefCell::new(self.to_tree()?)),
             ))
         } else if let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::Negation)) {
-            Ok(Factor::UnaryOp(UnaryOp::Negation, Rc::new(self.to_tree()?)))
+            Ok(Factor::UnaryOp(
+                UnaryOp::Negation,
+                Rc::new(RefCell::new(self.to_tree()?)),
+            ))
         } else if let Some(&Token::Integer(i)) = self.next_if(|&t| matches!(t, Token::Integer(_))) {
             Ok(Factor::Constant(i))
         } else if let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::Increment)) {

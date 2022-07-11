@@ -12,14 +12,14 @@ int power(int n, int e) {
     return res;
 }
 
-int print_num(int i) {
-    if (i == 0) putchar(48);
+int print_num(int n) {
+    if (n == 0) putchar(48);
     else {
         int start = 0;
-        for (; i >= power(10, start + 1); start++);
+        for (; n >= power(10, start + 1); start++);
         for (; start >= 0; start--) {
-            int digit = i / power(10, start);
-            i -= digit * power(10, start);
+            int digit = n / power(10, start);
+            n -= digit * power(10, start);
             putchar(digit + 48);
         }
     }
