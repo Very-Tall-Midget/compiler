@@ -7,6 +7,7 @@ edition = "2021"
 
 [dependencies]
 clap = { version = "3.2.8", features = [ "cargo" ] }
+llvm-ir = { version = "0.8.2", features = ["llvm-14"] }
 
 [profile.release]
 debug = 1

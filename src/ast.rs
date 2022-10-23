@@ -84,7 +84,10 @@ pub enum CallingConv {
     Syscall,
 }
 
-gen_into!(Keyword -> CallingConv: [ Keyword::Cdecl => CallingConv::Cdecl, Keyword::Syscall => CallingConv::Syscall ]);
+gen_into!(Keyword -> CallingConv: [
+    Keyword::Cdecl => CallingConv::Cdecl,
+    Keyword::Syscall => CallingConv::Syscall
+]);
 
 impl ToTree<Function> for Tokens<'_> {
     fn to_tree(&mut self) -> Tree<Function> {
@@ -439,7 +442,8 @@ pub enum AssignmentOp {
     BOrAssign,
 }
 
-gen_into!(Symbol -> AssignmentOp: [ Symbol::Assignment => AssignmentOp::Assign,
+gen_into!(Symbol -> AssignmentOp: [
+    Symbol::Assignment => AssignmentOp::Assign,
     Symbol::AddAssign => AssignmentOp::AddAssign,
     Symbol::SubAssign => AssignmentOp::SubAssign,
     Symbol::MultAssign => AssignmentOp::MultAssign,

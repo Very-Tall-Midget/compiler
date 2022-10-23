@@ -3,11 +3,22 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+use super::assembly::*;
 use super::ast::*;
 
-type Assembly = String;
+macro_rules! gen_into(
+    ($from:ident -> $to:ident: [ $($match_from:ident => $match_to:ident),+ $(,)? ]) => {
+        impl Into<$to> for &$from {
+            fn into(self) -> $to {
+                match self {
+                    $($from::$match_from => $to::$match_to),+,
+                }
+            }
+        }
+    };
+);
 
-pub fn generate(tree: &Program, optimise_assembly: bool) -> Result<Assembly, String> {
+pub fn generate(tree: &Program) -> Result<Assembly, String> {
     let mut ctx = Context {
         var_map: HashMap::new(),
         func_map: HashMap::new(),
@@ -16,50 +27,8 @@ pub fn generate(tree: &Program, optimise_assembly: bool) -> Result<Assembly, Str
         continue_label: None,
         break_label: None,
     };
-    if optimise_assembly {
-        optimise_asm(tree.to_assembly(&mut ctx)?)
-    } else {
-        tree.to_assembly(&mut ctx)
-    }
-}
-
-fn optimise_asm(asm: Assembly) -> Result<Assembly, String> {
-    let mut res = Assembly::new();
-
-    let mut last_mov_opt: Option<(String, String)> = None;
-    for line in asm.lines() {
-        let parts = line
-            .clone()
-            .split_terminator(|c: char| c.is_whitespace() || c == ',');
-        let mut parts = parts.filter(|&part| !part.is_empty());
-        if let Some("mov") = parts.next() {
-            if let Some(last_mov) = &last_mov_opt {
-                if last_mov.1 == parts.next().unwrap() {
-                    last_mov_opt = Some((last_mov.0.clone(), parts.next().unwrap().to_string()));
-                } else {
-                    res.push_str(&format!("    movq {}, {}\n", last_mov.0, last_mov.1));
-                    let parts = line
-                        .clone()
-                        .split_terminator(|c: char| c.is_whitespace() || c == ',');
-                    let mut parts = parts.filter(|&part| !part.is_empty());
-                    parts.next();
-                    let src = parts.next().unwrap().to_string();
-                    last_mov_opt = Some((src, parts.next().unwrap().to_string()));
-                }
-            } else {
-                let src = parts.next().unwrap().to_string();
-                last_mov_opt = Some((src, parts.next().unwrap().to_string()));
-            }
-        } else {
-            if let Some(last_mov) = last_mov_opt {
-                res.push_str(&format!("    movq {}, {}\n", last_mov.0, last_mov.1));
-                last_mov_opt = None;
-            }
-            res.push_str(&format!("{}\n", line));
-        }
-    }
-
-    Ok(res)
+    
+    tree.to_assembly(&mut ctx)
 }
 
 fn get_label() -> String {
@@ -111,7 +80,7 @@ impl ToAssembly for Program {
                                     id
                                 ));
                             } else {
-                                res.push_str(&format!("    .globl {0}\n    .data\n    .align 4\n{0}:\n    .long {1}\n", id, expr.evaluate()?));
+                                res.push(OpCode::GlobalVariable(id.clone(), expr.evaluate()?));
                                 global_map.insert(id.clone(), true);
                             }
                         } else {
@@ -128,7 +97,7 @@ impl ToAssembly for Program {
                     }
 
                     if let Some(_) = func.body {
-                        res.push_str(&format!("    .globl {}\n    .text\n", func.name));
+                        res.push(OpCode::FunctionDecl(func.name.clone()));
                         if let Some(info) = ctx.func_map.get(&func.name) {
                             if info.1 {
                                 return Err(format!(
@@ -162,7 +131,7 @@ impl ToAssembly for Program {
                             ctx.scope.insert(param.clone());
                             param_offset += 8;
                         }
-                        res.push_str(&func.to_assembly(&mut ctx)?);
+                        res.push_asm(&func.to_assembly(&mut ctx)?);
                     } else {
                         if let Some(info) = ctx.func_map.get(&func.name) {
                             if info.0 != func.params.len() {
@@ -183,10 +152,7 @@ impl ToAssembly for Program {
         }
         for item in global_map {
             if !item.1 {
-                res.push_str(&format!(
-                    "    .globl {0}\n    .bss\n    .align 4\n{0}:\n    .zero 4\n",
-                    item.0
-                ));
+                res.push(OpCode::GlobalVariable(item.0.clone(), 0));
             }
         }
 
@@ -286,9 +252,11 @@ impl ToAssembly for Program {
 
 impl ToAssembly for Function {
     fn to_assembly(&self, ctx: &mut Context) -> Result<Assembly, String> {
-        let mut res = format!("{0}:\n    push %rbp\n    mov %rsp, %rbp\n", self.name);
+        let mut res = Assembly::new();
+        res.push(OpCode::StartFunction(self.name.clone()));
+        res.push(OpCode::PreserveStack);
         ctx.stack_index = -8;
-        res.push_str(
+        res.push_asm(
             &self
                 .body
                 .as_ref()
@@ -297,7 +265,9 @@ impl ToAssembly for Function {
         );
 
         // placed to return incase a return didn't happen
-        res.push_str("    mov $0, %rax\n    mov %rbp, %rsp\n    pop %rbp\n    ret\n");
+        res.push(OpCode::MovImmediate(0, Location::rax()));
+        res.push(OpCode::RestoreStack);
+        res.push(OpCode::Return);
 
         Ok(res)
     }
@@ -316,7 +286,8 @@ impl ToAssembly for Statement {
         match self {
             Statement::Return(expr) => {
                 let mut res = expr.to_assembly(ctx)?;
-                res.push_str("    mov %rbp, %rsp\n    pop %rbp\n    ret\n");
+                res.push(OpCode::RestoreStack);
+                res.push(OpCode::Return);
                 Ok(res)
             }
             Statement::Expr(expr) => {
@@ -342,16 +313,19 @@ impl ToAssembly for Statement {
                     if let Some(statement2) = statement2_opt {
                         let int = get_label();
                         let end = get_label();
-                        res.push_str(&format!("    cmp $0, %rax\n    je {}\n", int));
-                        res.push_str(&statement1.borrow().to_assembly(ctx)?);
-                        res.push_str(&format!("    jmp {}\n{}:\n", end, int));
-                        res.push_str(&statement2.borrow().to_assembly(ctx)?);
-                        res.push_str(&format!("{}:\n", end));
+                        res.push(OpCode::CompareImmediate(0, Location::rax()));
+                        res.push(OpCode::Jump(JumpCondition::Equal, int.clone()));
+                        res.push_asm(&statement1.borrow().to_assembly(ctx)?);
+                        res.push(OpCode::Jump(JumpCondition::Unconditional, end.clone()));
+                        res.push(OpCode::Label(int));
+                        res.push_asm(&statement2.borrow().to_assembly(ctx)?);
+                        res.push(OpCode::Label(end));
                     } else {
                         let end = get_label();
-                        res.push_str(&format!("    cmp $0, %rax\n    je {}\n", end));
-                        res.push_str(&statement1.borrow().to_assembly(ctx)?);
-                        res.push_str(&format!("{}:\n", end));
+                        res.push(OpCode::CompareImmediate(0, Location::rax()));
+                        res.push(OpCode::Jump(JumpCondition::Equal, end.clone()));
+                        res.push_asm(&statement1.borrow().to_assembly(ctx)?);
+                        res.push(OpCode::Label(end));
                     }
                     Ok(res)
                 }
@@ -374,18 +348,20 @@ impl ToAssembly for Statement {
                 new_ctx.break_label = Some(end.clone());
                 new_ctx.continue_label = Some(post_expr_label.clone());
 
-                res.push_str(&init.to_assembly(&mut new_ctx)?);
-                res.push_str(&format!("{}:\n", start));
+                res.push_asm(&init.to_assembly(&mut new_ctx)?);
+                res.push(OpCode::Label(start.clone()));
                 if let Some(condition) = &condition.expr {
-                    res.push_str(&condition.to_assembly(&mut new_ctx)?);
+                    res.push_asm(&condition.to_assembly(&mut new_ctx)?);
                 } else {
-                    res.push_str("    mov $1, %rax\n");
+                    res.push(OpCode::MovImmediate(1, Location::rax()));
                 }
-                res.push_str(&format!("    cmp $0, %rax\n    je {}\n", end));
-                res.push_str(&statement.borrow().to_assembly(&mut new_ctx)?);
-                res.push_str(&format!("{}:\n", post_expr_label));
-                res.push_str(&post_expr.to_assembly(&mut new_ctx)?);
-                res.push_str(&format!("    jmp {}\n{}:\n", start, end));
+                res.push(OpCode::CompareImmediate(0, Location::rax()));
+                res.push(OpCode::Jump(JumpCondition::Equal, end.clone()));
+                res.push_asm(&statement.borrow().to_assembly(&mut new_ctx)?);
+                res.push(OpCode::Label(post_expr_label));
+                res.push_asm(&post_expr.to_assembly(&mut new_ctx)?);
+                res.push(OpCode::Jump(JumpCondition::Unconditional, start));
+                res.push(OpCode::Label(end));
 
                 Ok(res)
             }
@@ -407,22 +383,27 @@ impl ToAssembly for Statement {
                 new_ctx.break_label = Some(end.clone());
                 new_ctx.continue_label = Some(post_expr_label.clone());
 
-                res.push_str(&declerations.to_assembly(&mut new_ctx)?);
-                res.push_str(&format!("{}:\n", start));
+                res.push_asm(&declerations.to_assembly(&mut new_ctx)?);
+                res.push(OpCode::Label(start.clone()));
                 if let Some(condition) = &condition.expr {
-                    res.push_str(&condition.to_assembly(&mut new_ctx)?);
+                    res.push_asm(&condition.to_assembly(&mut new_ctx)?);
                 } else {
-                    res.push_str("    mov $1, %rax\n");
+                    res.push(OpCode::MovImmediate(1, Location::rax()));
                 }
-                res.push_str(&format!("    cmp $0, %rax\n    je {}\n", end));
-                res.push_str(&statement.borrow().to_assembly(&mut new_ctx)?);
-                res.push_str(&format!("{}:\n", post_expr_label));
-                res.push_str(&post_expr.to_assembly(&mut new_ctx)?);
-                res.push_str(&format!("    jmp {}\n{}:\n", start, end));
+                res.push(OpCode::CompareImmediate(0, Location::rax()));
+                res.push(OpCode::Jump(JumpCondition::Equal, end.clone()));
+                res.push_asm(&statement.borrow().to_assembly(&mut new_ctx)?);
+                res.push(OpCode::Label(post_expr_label));
+                res.push_asm(&post_expr.to_assembly(&mut new_ctx)?);
+                res.push(OpCode::Jump(JumpCondition::Unconditional, start));
+                res.push(OpCode::Label(end));
 
                 let bytes_to_deallocate = 8 * new_ctx.scope.len();
                 if bytes_to_deallocate != 0 {
-                    res.push_str(&format!("    add ${}, %rsp\n", bytes_to_deallocate));
+                    res.push(OpCode::AddImmediate(
+                        bytes_to_deallocate as i32,
+                        Location::rsp(),
+                    ));
                 }
 
                 Ok(res)
@@ -440,11 +421,14 @@ impl ToAssembly for Statement {
                 new_ctx.break_label = Some(end.clone());
                 new_ctx.continue_label = Some(start.clone());
 
-                let mut res = format!("{}:\n", start);
-                res.push_str(&expr.to_assembly(&mut new_ctx)?);
-                res.push_str(&format!("    cmp $0, %rax\n    je {}\n", end));
-                res.push_str(&statement.borrow().to_assembly(&mut new_ctx)?);
-                res.push_str(&format!("    jmp {}\n{}:\n", start, end));
+                let mut res = Assembly::new();
+                res.push(OpCode::Label(start.clone()));
+                res.push_asm(&expr.to_assembly(&mut new_ctx)?);
+                res.push(OpCode::CompareImmediate(0, Location::rax()));
+                res.push(OpCode::Jump(JumpCondition::Equal, end.clone()));
+                res.push_asm(&statement.borrow().to_assembly(&mut new_ctx)?);
+                res.push(OpCode::Jump(JumpCondition::Unconditional, start));
+                res.push(OpCode::Label(end));
 
                 Ok(res)
             }
@@ -457,7 +441,7 @@ impl ToAssembly for Statement {
                         new_ctx.continue_label = Some(label.clone());
 
                         let mut res = statement.borrow().to_assembly(&mut new_ctx)?;
-                        res.push_str(&format!("{}:\n", label));
+                        res.push(OpCode::Label(label));
                         return Ok(res);
                     }
                 }
@@ -468,23 +452,30 @@ impl ToAssembly for Statement {
                 new_ctx.break_label = Some(end.clone());
                 new_ctx.continue_label = Some(start.clone());
 
-                let mut res = format!("{}:\n", start);
-                res.push_str(&statement.borrow().to_assembly(&mut new_ctx)?);
-                res.push_str(&expr.to_assembly(&mut new_ctx)?);
-                res.push_str(&format!("    cmp $0, %rax\n    jne {}\n{}:\n", start, end));
+                let mut res = Assembly::new();
+                res.push(OpCode::Label(start.clone()));
+                res.push_asm(&statement.borrow().to_assembly(&mut new_ctx)?);
+                res.push_asm(&expr.to_assembly(&mut new_ctx)?);
+                res.push(OpCode::CompareImmediate(0, Location::rax()));
+                res.push(OpCode::Jump(JumpCondition::NotEqual, start));
+                res.push(OpCode::Label(end));
 
                 Ok(res)
             }
             Statement::Break => {
                 if let Some(label) = &ctx.break_label {
-                    Ok(format!("    jmp {}\n", label))
+                    let mut res = Assembly::new();
+                    res.push(OpCode::Jump(JumpCondition::Unconditional, label.clone()));
+                    Ok(res)
                 } else {
                     Err("[Code Generation]: Break statement not in loop".to_string())
                 }
             }
             Statement::Continue => {
                 if let Some(label) = &ctx.continue_label {
-                    Ok(format!("    jmp {}\n", label))
+                    let mut res = Assembly::new();
+                    res.push(OpCode::Jump(JumpCondition::Unconditional, label.clone()));
+                    Ok(res)
                 } else {
                     Err("[Code Generation]: Continue statement not in loop".to_string())
                 }
@@ -585,7 +576,7 @@ impl ToAssembly for Block {
         let mut new_ctx = ctx.clone();
         new_ctx.scope = HashSet::new();
         for item in &self.items {
-            res.push_str(&match item {
+            res.push_asm(&match item {
                 BlockItem::Statement(s) => {
                     let mut temp_ctx = new_ctx.clone();
                     let r = s.to_assembly(&mut temp_ctx)?;
@@ -598,7 +589,10 @@ impl ToAssembly for Block {
 
         let bytes_to_deallocate = 8 * new_ctx.scope.len();
         if bytes_to_deallocate != 0 {
-            res.push_str(&format!("    add ${}, %rsp\n", bytes_to_deallocate));
+            res.push(OpCode::AddImmediate(
+                bytes_to_deallocate as i32,
+                Location::rsp(),
+            ));
         }
 
         Ok(res)
@@ -640,10 +634,10 @@ impl ToAssembly for Declarations {
                 ctx.var_map
                     .insert(id.clone(), format!("{}(%rbp)", ctx.stack_index));
                 if let Some(expr) = expr_opt {
-                    res.push_str(&expr.to_assembly(ctx)?);
-                    res.push_str("    push %rax\n");
+                    res.push_asm(&expr.to_assembly(ctx)?);
+                    res.push(OpCode::Push(Location::rax()));
                 } else {
-                    res.push_str("    push $0\n");
+                    res.push(OpCode::PushImmediate(0));
                 }
                 ctx.stack_index -= 8;
             }
@@ -706,21 +700,75 @@ impl ToAssembly for Expr {
             Expr::Assignment(id, assign_op, expr) => {
                 let mut res = expr.borrow().to_assembly(ctx)?;
                 if let Some(loc) = ctx.var_map.get(id) {
+                    let loc = Location {
+                        name: loc.clone(),
+                        size: LocationSize::Qword,
+                    };
                     match assign_op {
                         AssignmentOp::Assign => {}
-                        AssignmentOp::AddAssign => res.push_str(&format!("    mov {}, %rcx\n    add %rcx, %rax\n", loc)),
-                        AssignmentOp::SubAssign => res.push_str(&format!("    mov %rax, %rcx\n    mov {}, %rax\n    sub %rcx, %rax\n", loc)),
-                        AssignmentOp::MultAssign => res.push_str(&format!("    mov {}, %rcx\n    imul %rcx, %rax\n", loc)),
-                        AssignmentOp::DivAssign => res.push_str(&format!("    mov %rax, %rcx\n    mov {}, %rax\n    cqo\n    idiv %rcx\n", loc)),
-                        AssignmentOp::ModAssign => res.push_str(&format!("    mov %rax, %rcx\n    mov {}, %rax\n    cqo\n    idiv %rcx\n    mov %rdx, %rax\n", loc)),
-                        AssignmentOp::SLAssign => res.push_str(&format!("    mov %rax, %rcx\n    mov {}, %rax\n    shl %cl, %rax\n", loc)),
-                        AssignmentOp::SRAssign => res.push_str(&format!("    mov %rax, %rcx\n    mov {}, %rax\n    shr %cl, %rax\n", loc)),
-                        AssignmentOp::BAndAssign => res.push_str(&format!("    mov {}, %rcx\n    and %rcx, %rax\n", loc)),
-                        AssignmentOp::BXorAssign => res.push_str(&format!("    mov {}, %rcx\n    xor %rcx, %rax\n", loc)),
-                        AssignmentOp::BOrAssign => res.push_str(&format!("    mov {}, %rcx\n    or %rcx, %rax\n", loc)),
+                        AssignmentOp::AddAssign => {
+                            res.push(OpCode::Mov(loc.clone(), Location::rcx()));
+                            res.push(OpCode::Add(Location::rcx(), Location::rax()));
+                        }
+                        AssignmentOp::SubAssign => {
+                            res.push(OpCode::Mov(Location::rax(), Location::rcx()));
+                            res.push(OpCode::Mov(loc.clone(), Location::rax()));
+                            res.push(OpCode::Sub(Location::rcx(), Location::rax()));
+                        }
+                        AssignmentOp::MultAssign => {
+                            res.push(OpCode::Mov(loc.clone(), Location::rcx()));
+                            res.push(OpCode::Mult(Location::rcx(), Location::rax()));
+                        }
+                        AssignmentOp::DivAssign => {
+                            res.push(OpCode::Mov(Location::rax(), Location::rcx()));
+                            res.push(OpCode::Mov(loc.clone(), Location::rax()));
+                            res.push(OpCode::SignExtend);
+                            res.push(OpCode::IDiv(Location::rcx()));
+                        }
+                        AssignmentOp::ModAssign => {
+                            res.push(OpCode::Mov(Location::rax(), Location::rcx()));
+                            res.push(OpCode::Mov(loc.clone(), Location::rax()));
+                            res.push(OpCode::SignExtend);
+                            res.push(OpCode::IDiv(Location::rcx()));
+                            res.push(OpCode::Mov(Location::rdx(), Location::rax()));
+                        }
+                        AssignmentOp::SLAssign => {
+                            res.push(OpCode::Mov(Location::rax(), Location::rcx()));
+                            res.push(OpCode::Mov(loc.clone(), Location::rax()));
+                            res.push(OpCode::ShiftLeft(
+                                Location {
+                                    name: "%cl".to_string(),
+                                    size: LocationSize::Byte,
+                                },
+                                Location::rax(),
+                            ));
+                        }
+                        AssignmentOp::SRAssign => {
+                            res.push(OpCode::Mov(Location::rax(), Location::rcx()));
+                            res.push(OpCode::Mov(loc.clone(), Location::rax()));
+                            res.push(OpCode::ShiftRight(
+                                Location {
+                                    name: "%cl".to_string(),
+                                    size: LocationSize::Byte,
+                                },
+                                Location::rax(),
+                            ));
+                        }
+                        AssignmentOp::BAndAssign => {
+                            res.push(OpCode::Mov(loc.clone(), Location::rcx()));
+                            res.push(OpCode::And(Location::rcx(), Location::rax()));
+                        }
+                        AssignmentOp::BXorAssign => {
+                            res.push(OpCode::Mov(loc.clone(), Location::rcx()));
+                            res.push(OpCode::Xor(Location::rcx(), Location::rax()));
+                        }
+                        AssignmentOp::BOrAssign => {
+                            res.push(OpCode::Mov(loc.clone(), Location::rcx()));
+                            res.push(OpCode::Or(Location::rcx(), Location::rax()));
+                        }
                     }
 
-                    res.push_str(&format!("    mov %rax, {}\n", loc));
+                    res.push(OpCode::Mov(Location::rax(), loc));
                     Ok(res)
                 } else {
                     Err(format!("[Code Generation]: Undeclared variable '{}'", id))
@@ -728,7 +776,9 @@ impl ToAssembly for Expr {
             }
             Expr::ConditionalExpr(ce) => {
                 if let Ok(val) = self.evaluate() {
-                    Ok(format!("    mov ${}, %rax\n", val))
+                    let mut res = Assembly::new();
+                    res.push(OpCode::MovImmediate(val, Location::rax()));
+                    Ok(res)
                 } else {
                     ce.to_assembly(ctx)
                 }
@@ -765,11 +815,13 @@ impl ToAssembly for ConditionalExpr {
         if let Some((expr1, expr2)) = &self.options {
             let int = get_label();
             let end = get_label();
-            res.push_str(&format!("    cmp $0, %rax\n    je {}\n", int));
-            res.push_str(&expr1.borrow().to_assembly(ctx)?);
-            res.push_str(&format!("    jmp {}\n{}:\n", end, int));
-            res.push_str(&expr2.borrow().to_assembly(ctx)?);
-            res.push_str(&format!("{}:\n", end));
+            res.push(OpCode::CompareImmediate(0, Location::rax()));
+            res.push(OpCode::Jump(JumpCondition::Equal, int.clone()));
+            res.push_asm(&expr1.borrow().to_assembly(ctx)?);
+            res.push(OpCode::Jump(JumpCondition::Unconditional, end.clone()));
+            res.push(OpCode::Label(int));
+            res.push_asm(&expr2.borrow().to_assembly(ctx)?);
+            res.push(OpCode::Label(end));
         }
 
         Ok(res)
@@ -804,15 +856,22 @@ impl ToAssembly for LogOrExpr {
         for lae in &self.log_and_exprs {
             let clause_label = get_label();
             let end_label = get_label();
-            res.push_str(&format!(
-                "    cmp $0, %rax\n    je {0}\n    mov $1, %rax\n    jmp {1}\n{0}:\n",
-                clause_label, end_label
+            res.push(OpCode::CompareImmediate(0, Location::rax()));
+            res.push(OpCode::Jump(JumpCondition::Equal, clause_label.clone()));
+            res.push(OpCode::MovImmediate(1, Location::rax()));
+            res.push(OpCode::Jump(JumpCondition::Unconditional, end_label.clone()));
+            res.push(OpCode::Label(clause_label));
+            res.push_asm(&lae.to_assembly(ctx)?);
+            res.push(OpCode::CompareImmediate(0, Location::rax()));
+            res.push(OpCode::MovImmediate(0, Location::rax()));
+            res.push(OpCode::Set(
+                SetCondition::NotEqual,
+                Location {
+                    name: "%al".to_string(),
+                    size: LocationSize::Byte,
+                },
             ));
-            res.push_str(&lae.to_assembly(ctx)?);
-            res.push_str(&format!(
-                "    cmp $0, %rax\n    mov $0, %rax\n    setne %al\n{}:\n",
-                end_label
-            ));
+            res.push(OpCode::Label(end_label));
         }
         Ok(res)
     }
@@ -844,15 +903,21 @@ impl ToAssembly for LogAndExpr {
         for boe in &self.bit_or_exprs {
             let clause_label = get_label();
             let end_label = get_label();
-            res.push_str(&format!(
-                "    cmp $0, %rax\n    jne {0}\n    jmp {1}\n{0}:\n",
-                clause_label, end_label
+            res.push(OpCode::CompareImmediate(0, Location::rax()));
+            res.push(OpCode::Jump(JumpCondition::NotEqual, clause_label.clone()));
+            res.push(OpCode::Jump(JumpCondition::Unconditional, end_label.clone()));
+            res.push(OpCode::Label(clause_label));
+            res.push_asm(&boe.to_assembly(ctx)?);
+            res.push(OpCode::CompareImmediate(0, Location::rax()));
+            res.push(OpCode::MovImmediate(0, Location::rax()));
+            res.push(OpCode::Set(
+                SetCondition::NotEqual,
+                Location {
+                    name: "%al".to_string(),
+                    size: LocationSize::Byte,
+                },
             ));
-            res.push_str(&boe.to_assembly(ctx)?);
-            res.push_str(&format!(
-                "    cmp $0, %rax\n    mov $0, %rax\n    setne %al\n{}:\n",
-                end_label
-            ));
+            res.push(OpCode::Label(end_label));
         }
         Ok(res)
     }
@@ -882,9 +947,10 @@ impl ToAssembly for BitOrExpr {
     fn to_assembly(&self, ctx: &mut Context) -> Result<Assembly, String> {
         let mut res = self.bit_xor_expr.to_assembly(ctx)?;
         for bxe in &self.bit_xor_exprs {
-            res.push_str("    push %rax\n");
-            res.push_str(&bxe.to_assembly(ctx)?);
-            res.push_str("    pop %rcx\n    or %rcx, %rax\n");
+            res.push(OpCode::Push(Location::rax()));
+            res.push_asm(&bxe.to_assembly(ctx)?);
+            res.push(OpCode::Pop(Location::rcx()));
+            res.push(OpCode::Or(Location::rcx(), Location::rax()));
         }
         Ok(res)
     }
@@ -910,9 +976,10 @@ impl ToAssembly for BitXorExpr {
     fn to_assembly(&self, ctx: &mut Context) -> Result<Assembly, String> {
         let mut res = self.bit_and_expr.to_assembly(ctx)?;
         for bae in &self.bit_and_exprs {
-            res.push_str("    push %rax\n");
-            res.push_str(&bae.to_assembly(ctx)?);
-            res.push_str("    pop %rcx\n    xor %rcx, %rax\n");
+            res.push(OpCode::Push(Location::rax()));
+            res.push_asm(&bae.to_assembly(ctx)?);
+            res.push(OpCode::Pop(Location::rcx()));
+            res.push(OpCode::Xor(Location::rcx(), Location::rax()));
         }
         Ok(res)
     }
@@ -938,9 +1005,10 @@ impl ToAssembly for BitAndExpr {
     fn to_assembly(&self, ctx: &mut Context) -> Result<Assembly, String> {
         let mut res = self.eq_expr.to_assembly(ctx)?;
         for ee in &self.eq_exprs {
-            res.push_str("    push %rax\n");
-            res.push_str(&ee.to_assembly(ctx)?);
-            res.push_str("    pop %rcx\n    and %rcx, %rax\n");
+            res.push(OpCode::Push(Location::rax()));
+            res.push_asm(&ee.to_assembly(ctx)?);
+            res.push(OpCode::Pop(Location::rcx()));
+            res.push(OpCode::And(Location::rcx(), Location::rax()));
         }
         Ok(res)
     }
@@ -962,18 +1030,26 @@ impl ToAssembly for BitAndExpr {
     }
 }
 
+gen_into!(EqOp -> SetCondition: [
+    IsEqual => Equal,
+    NotEqual => NotEqual,
+]);
+
 impl ToAssembly for EqExpr {
     fn to_assembly(&self, ctx: &mut Context) -> Result<Assembly, String> {
         let mut res = self.rel_expr.to_assembly(ctx)?;
         for (ro, re) in &self.rel_exprs {
-            res.push_str("    push %rax\n");
-            res.push_str(&re.to_assembly(ctx)?);
-            res.push_str(&format!(
-                "    pop %rcx\n    cmp %rax, %rcx\n    mov $0, %rax\n    set{} %al\n",
-                match ro {
-                    EqOp::IsEqual => "e",
-                    EqOp::NotEqual => "ne",
-                }
+            res.push(OpCode::Push(Location::rax()));
+            res.push_asm(&re.to_assembly(ctx)?);
+            res.push(OpCode::Pop(Location::rcx()));
+            res.push(OpCode::Compare(Location::rax(), Location::rcx()));
+            res.push(OpCode::MovImmediate(0, Location::rax()));
+            res.push(OpCode::Set(
+                ro.into(),
+                Location {
+                    name: "%al".to_string(),
+                    size: LocationSize::Byte,
+                },
             ));
         }
         Ok(res)
@@ -1011,20 +1087,28 @@ impl ToAssembly for EqExpr {
     }
 }
 
+gen_into!(RelOp -> SetCondition: [
+    LT => LessThan,
+    LTE => LessThanOrEqual,
+    GT => GreaterThan,
+    GTE => GreaterThanOrEqual,
+]);
+
 impl ToAssembly for RelExpr {
     fn to_assembly(&self, ctx: &mut Context) -> Result<Assembly, String> {
         let mut res = self.shift_expr.to_assembly(ctx)?;
         for (ro, se) in &self.shift_exprs {
-            res.push_str("    push %rax\n");
-            res.push_str(&se.to_assembly(ctx)?);
-            res.push_str(&format!(
-                "    pop %rcx\n    cmp %rax, %rcx\n    mov $0, %rax\n    set{} %al\n",
-                match ro {
-                    RelOp::LT => "l",
-                    RelOp::GT => "g",
-                    RelOp::LTE => "le",
-                    RelOp::GTE => "ge",
-                }
+            res.push(OpCode::Push(Location::rax()));
+            res.push_asm(&se.to_assembly(ctx)?);
+            res.push(OpCode::Pop(Location::rcx()));
+            res.push(OpCode::Compare(Location::rax(), Location::rcx()));
+            res.push(OpCode::MovImmediate(0, Location::rax()));
+            res.push(OpCode::Set(
+                ro.into(),
+                Location {
+                    name: "%al".to_string(),
+                    size: LocationSize::Byte,
+                },
             ));
         }
         Ok(res)
@@ -1080,15 +1164,30 @@ impl ToAssembly for ShiftExpr {
     fn to_assembly(&self, ctx: &mut Context) -> Result<Assembly, String> {
         let mut res = self.add_expr.to_assembly(ctx)?;
         for (so, ae) in &self.add_exprs {
-            res.push_str("    push %rax\n");
-            res.push_str(&ae.to_assembly(ctx)?);
-            res.push_str(&format!(
-                "    mov %rax, %rcx\n    pop %rax\n    sh{} %cl, %rax\n",
-                match so {
-                    ShiftOp::Left => "l",
-                    ShiftOp::Right => "r",
+            res.push(OpCode::Push(Location::rax()));
+            res.push_asm(&ae.to_assembly(ctx)?);
+            res.push(OpCode::Mov(Location::rax(), Location::rcx()));
+            res.push(OpCode::Pop(Location::rax()));
+            match so {
+                ShiftOp::Left => {
+                    res.push(OpCode::ShiftLeft(
+                        Location {
+                            name: "%cl".to_string(),
+                            size: LocationSize::Byte,
+                        },
+                        Location::rax(),
+                    ));
                 }
-            ));
+                ShiftOp::Right => {
+                    res.push(OpCode::ShiftRight(
+                        Location {
+                            name: "%cl".to_string(),
+                            size: LocationSize::Byte,
+                        },
+                        Location::rax(),
+                    ));
+                }
+            }
         }
         Ok(res)
     }
@@ -1117,15 +1216,17 @@ impl ToAssembly for AddExpr {
     fn to_assembly(&self, ctx: &mut Context) -> Result<Assembly, String> {
         let mut res = self.term.to_assembly(ctx)?;
         for term in &self.terms {
-            res.push_str("    push %rax\n");
+            res.push(OpCode::Push(Location::rax()));
+            res.push_asm(&term.1.to_assembly(ctx)?);
             match term.0 {
                 BinaryOp::Addition => {
-                    res.push_str(&term.1.to_assembly(ctx)?);
-                    res.push_str("    pop %rcx\n    add %rcx, %rax\n");
+                    res.push(OpCode::Pop(Location::rcx()));
+                    res.push(OpCode::Add(Location::rcx(), Location::rax()));
                 }
                 BinaryOp::Subtraction => {
-                    res.push_str(&term.1.to_assembly(ctx)?);
-                    res.push_str("    mov %rax, %rcx\n    pop %rax\n    sub %rcx, %rax\n");
+                    res.push(OpCode::Mov(Location::rax(), Location::rcx()));
+                    res.push(OpCode::Pop(Location::rax()));
+                    res.push(OpCode::Sub(Location::rcx(), Location::rax()));
                 }
                 _ => unreachable!(),
             }
@@ -1158,19 +1259,25 @@ impl ToAssembly for Term {
     fn to_assembly(&self, ctx: &mut Context) -> Result<Assembly, String> {
         let mut res = self.factor.to_assembly(ctx)?;
         for factor in &self.factors {
-            res.push_str("    push %rax\n");
+            res.push(OpCode::Push(Location::rax()));
+            res.push_asm(&factor.1.to_assembly(ctx)?);
             match factor.0 {
                 BinaryOp::Multiply => {
-                    res.push_str(&factor.1.to_assembly(ctx)?);
-                    res.push_str("    pop %rcx\n    imul %rcx, %rax\n");
+                    res.push(OpCode::Pop(Location::rcx()));
+                    res.push(OpCode::Mult(Location::rcx(), Location::rax()));
                 }
                 BinaryOp::Divide => {
-                    res.push_str(&factor.1.to_assembly(ctx)?);
-                    res.push_str("    mov %rax, %rcx\n    cqo\n    pop %rax\n    idiv %rcx\n");
+                    res.push(OpCode::Mov(Location::rax(), Location::rcx()));
+                    res.push(OpCode::SignExtend);
+                    res.push(OpCode::Pop(Location::rax()));
+                    res.push(OpCode::IDiv(Location::rcx()));
                 }
                 BinaryOp::Modulo => {
-                    res.push_str(&factor.1.to_assembly(ctx)?);
-                    res.push_str("    mov %rax, %rcx\n    cqo\n    pop %rax\n    idiv %rcx\n    mov %rdx, %rax\n");
+                    res.push(OpCode::Mov(Location::rax(), Location::rcx()));
+                    res.push(OpCode::SignExtend);
+                    res.push(OpCode::Pop(Location::rax()));
+                    res.push(OpCode::IDiv(Location::rcx()));
+                    res.push(OpCode::Mov(Location::rdx(), Location::rax()));
                 }
                 _ => unreachable!(),
             }
@@ -1207,26 +1314,41 @@ impl ToAssembly for Factor {
             Factor::UnaryOp(uo, factor) => {
                 let mut res = factor.borrow().to_assembly(ctx)?;
                 match uo {
-                    UnaryOp::Negation => res.push_str("    neg %rax\n"),
-                    UnaryOp::Complement => res.push_str("    not %rax\n"),
+                    UnaryOp::Negation => res.push(OpCode::Negation(Location::rax())),
+                    UnaryOp::Complement => res.push(OpCode::Not(Location::rax())),
                     UnaryOp::Not => {
-                        res.push_str("    cmp $0, %rax\n    mov $0, %rax\n    sete %al\n")
+                        res.push(OpCode::CompareImmediate(0, Location::rax()));
+                        res.push(OpCode::MovImmediate(0, Location::rax()));
+                        res.push(OpCode::Set(
+                            SetCondition::Equal,
+                            Location {
+                                name: "%al".to_string(),
+                                size: LocationSize::Byte,
+                            },
+                        ));
                     }
                 }
                 Ok(res)
             }
-            Factor::Constant(i) => Ok(format!("    mov ${}, %rax\n", i)),
+            Factor::Constant(i) => {
+                let mut res = Assembly::new();
+                res.push(OpCode::MovImmediate(*i as i32, Location::rax()));
+                Ok(res)
+            }
             Factor::Identifier(postfix_id) => postfix_id.to_assembly(ctx),
             Factor::Prefix(inc_dec, id) => {
                 if let Some(loc) = ctx.var_map.get(id) {
-                    Ok(format!(
-                        "    {1} {0}\n    mov {0}, %rax\n",
-                        loc,
-                        match inc_dec {
-                            IncDec::Incremenet => "incq",
-                            IncDec::Decrement => "decq",
-                        }
-                    ))
+                    let mut res = Assembly::new();
+                    let loc = Location {
+                        name: loc.clone(),
+                        size: LocationSize::Qword,
+                    };
+                    res.push(match inc_dec {
+                        IncDec::Incremenet => OpCode::Increment(loc.clone()),
+                        IncDec::Decrement => OpCode::Decrement(loc.clone()),
+                    });
+                    res.push(OpCode::Mov(loc, Location::rax()));
+                    Ok(res)
                 } else {
                     Err(format!("[Code Generation]: Undeclared variable '{}'", id))
                 }
@@ -1243,12 +1365,15 @@ impl ToAssembly for Factor {
                         match func.2 {
                             CallingConv::Cdecl => {
                                 for arg in args.iter().rev() {
-                                    res.push_str(&arg.to_assembly(ctx)?);
-                                    res.push_str("    push %rax\n");
+                                    res.push_asm(&arg.to_assembly(ctx)?);
+                                    res.push(OpCode::Push(Location::rax()));
                                 }
-                                res.push_str(&format!("    call {}\n", id));
+                                res.push(OpCode::Call(id.clone()));
                                 if args.len() != 0 {
-                                    res.push_str(&format!("    add ${}, %rsp\n", args.len() * 8));
+                                    res.push(OpCode::AddImmediate(
+                                        8 * args.len() as i32,
+                                        Location::rsp(),
+                                    ));
                                 }
                             }
                             CallingConv::Syscall => {
@@ -1256,18 +1381,30 @@ impl ToAssembly for Factor {
                                     return Err("[Code Generation]: __syscall calls with more than 3 arguments are not supported".to_string());
                                 }
                                 if let Some(arg1) = args.get(0) {
-                                    res.push_str(&arg1.to_assembly(ctx)?);
-                                    res.push_str("    mov %rax, %rdi\n");
+                                    res.push_asm(&arg1.to_assembly(ctx)?);
+                                    res.push(OpCode::Mov(
+                                        Location::rax(),
+                                        Location {
+                                            name: "%rdi".to_string(),
+                                            size: LocationSize::Qword,
+                                        },
+                                    ));
                                     if let Some(arg2) = args.get(1) {
-                                        res.push_str(&arg2.to_assembly(ctx)?);
-                                        res.push_str("    mov %rax, %rsi\n");
+                                        res.push_asm(&arg2.to_assembly(ctx)?);
+                                        res.push(OpCode::Mov(
+                                            Location::rax(),
+                                            Location {
+                                                name: "%rsi".to_string(),
+                                                size: LocationSize::Qword,
+                                            },
+                                        ));
                                         if let Some(arg3) = args.get(2) {
-                                            res.push_str(&arg3.to_assembly(ctx)?);
-                                            res.push_str("    mov %rax, %rdx\n");
+                                            res.push_asm(&arg3.to_assembly(ctx)?);
+                                            res.push(OpCode::Mov(Location::rax(), Location::rdx()));
                                         }
                                     }
                                 }
-                                res.push_str(&format!("    call {}\n", id));
+                                res.push(OpCode::Call(id.clone()));
                             }
                         }
 
@@ -1359,17 +1496,28 @@ impl ToAssembly for Factor {
 impl ToAssembly for PostfixID {
     fn to_assembly(&self, ctx: &mut Context) -> Result<Assembly, String> {
         if let Some(loc) = ctx.var_map.get(&self.id) {
-            if let Some(p) = &self.postfix {
-                Ok(format!(
-                    "    mov {0}, %rax\n    {1} {0}\n",
-                    loc,
-                    match p {
-                        IncDec::Incremenet => "incq",
-                        IncDec::Decrement => "decq",
-                    }
-                ))
+            if let Some(inc_dec) = &self.postfix {
+                let mut res = Assembly::new();
+                let loc = Location {
+                    name: loc.clone(),
+                    size: LocationSize::Qword,
+                };
+                res.push(OpCode::Mov(loc.clone(), Location::rax()));
+                res.push(match inc_dec {
+                    IncDec::Incremenet => OpCode::Increment(loc),
+                    IncDec::Decrement => OpCode::Decrement(loc),
+                });
+                Ok(res)
             } else {
-                Ok(format!("    mov {}, %rax\n", loc))
+                let mut res = Assembly::new();
+                res.push(OpCode::Mov(
+                    Location {
+                        name: loc.clone(),
+                        size: LocationSize::Qword,
+                    },
+                    Location::rax(),
+                ));
+                Ok(res)
             }
         } else {
             Err(format!(

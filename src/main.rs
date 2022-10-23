@@ -4,8 +4,13 @@ use lexer::*;
 mod ast;
 use ast::*;
 
-mod generate;
-use generate::*;
+// mod generate;
+// use generate::*;
+
+mod generate_llvm;
+use generate_llvm::*;
+
+mod assembly;
 
 use clap::arg;
 use std::{
@@ -18,6 +23,8 @@ fn cli() -> clap::Command<'static> {
     clap::Command::new("compiler")
         .about("Compiler for a basic version of C/C++")
         .version(clap::crate_version!())
+        .arg_required_else_help(true)
+        .subcommand_required(true)
         .subcommand(
             clap::Command::new("build")
                 .arg(arg!(input: -i <FILE> "Input file").required(true))
@@ -37,9 +44,10 @@ fn cli() -> clap::Command<'static> {
 }
 
 fn write_assembly(asm: String, file: String) {
-    let mut file = fs::File::create(file).expect("Failed to create file 'assembly.s'");
-    file.write_all(asm.as_bytes())
-        .expect("Failed to write to file 'assembly.s'");
+    fs::File::create(&file)
+        .expect(&format!("Failed to create file '{}'", file))
+        .write_all(asm.as_bytes())
+        .expect(&format!("Failed to write to file '{}'", file));
 }
 
 fn compile_assembly(out: String) -> Result<(), String> {
@@ -70,9 +78,14 @@ fn main() -> Result<(), String> {
             let res = lex(code)?;
             //println!("{:?}", res);
             let tree = ast(&res)?;
-            //println!("{:?}", tree);
-            let asm = generate(&tree, args.contains_id("optimise_assembly"))?;
+            //println!("{:#?}", tree);
+            let mut asm = generate(&tree)?;
             //println!("{}", asm);
+
+            if args.contains_id("optimise_assembly") {
+                asm = asm.optimised();
+            }
+            let asm = asm.to_string()?;
 
             if args.contains_id("assembly") {
                 write_assembly(asm, out.clone());
