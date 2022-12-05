@@ -4,9 +4,9 @@ use super::lexer::*;
 
 macro_rules! gen_into(
     ($from:ident -> $to:ident: [ $($match_from:pat => $match_to:expr),+ $(,)? ]) => {
-        impl Into<$to> for &$from {
-            fn into(self) -> $to {
-                match self {
+        impl From<$from> for $to {
+            fn from(val: $from) -> $to {
+                match val {
                     $($match_from => $match_to),+,
                     _ => unreachable!(),
                 }
@@ -23,7 +23,7 @@ trait ToTree<T> {
 }
 
 // MAIN FUNCTION
-pub fn ast(tokens: &Vec<Token>) -> Tree<Program> {
+pub fn ast(tokens: &[Token]) -> Tree<Program> {
     tokens.iter().peekable().to_tree()
 }
 
@@ -44,7 +44,7 @@ impl ToTree<Program> for Tokens<'_> {
         let mut items = Vec::new();
 
         loop {
-            if let Some(_) = self.next_if_eq(&&Token::EOF) {
+            if self.next_if_eq(&&Token::Eof).is_some() {
                 break;
             } else {
                 let mut copy = self.clone();
@@ -72,40 +72,22 @@ impl ToTree<Program> for Tokens<'_> {
 // FUNCTION
 #[derive(Debug)]
 pub struct Function {
-    pub call_conv: CallingConv,
     pub name: String,
     pub params: Vec<String>,
     pub body: Option<Block>,
 }
 
-#[derive(Debug, PartialEq, Clone)]
-pub enum CallingConv {
-    Cdecl,
-    Syscall,
-}
-
-gen_into!(Keyword -> CallingConv: [
-    Keyword::Cdecl => CallingConv::Cdecl,
-    Keyword::Syscall => CallingConv::Syscall
-]);
-
 impl ToTree<Function> for Tokens<'_> {
     fn to_tree(&mut self) -> Tree<Function> {
         if let Some(Token::Keyword(Keyword::Int)) = self.next() {
-            let mut call_conv = CallingConv::Cdecl;
-            if let Some(Token::Keyword(k)) =
-                self.next_if(|&t| matches!(t, Token::Keyword(Keyword::Cdecl | Keyword::Syscall)))
-            {
-                call_conv = k.into();
-            }
             if let Some(Token::Identifier(i)) = self.next() {
                 let name = i.clone();
                 if let Some(Token::Symbol(Symbol::OpenParen)) = self.next() {
                     let mut params = Vec::new();
-                    while let Some(_) = self.next_if_eq(&&Token::Keyword(Keyword::Int)) {
+                    while self.next_if_eq(&&Token::Keyword(Keyword::Int)).is_some() {
                         if let Some(Token::Identifier(id)) = &self.next() {
                             params.push(id.clone());
-                            if let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::Comma)) {
+                            if self.next_if_eq(&&Token::Symbol(Symbol::Comma)).is_some() {
                                 continue;
                             } else {
                                 break;
@@ -117,19 +99,13 @@ impl ToTree<Function> for Tokens<'_> {
 
                     if let Some(Token::Symbol(Symbol::CloseParen)) = self.next() {
                         if let Some(Token::Symbol(Symbol::OpenBrace)) = self.peek() {
-                            if call_conv == CallingConv::Syscall {
-                                Err("[Parser]: Cannot define functions with calling convention '__syscall'".to_string())
-                            } else {
-                                Ok(Function {
-                                    call_conv,
-                                    name,
-                                    params,
-                                    body: Some(self.to_tree()?),
-                                })
-                            }
+                            Ok(Function {
+                                name,
+                                params,
+                                body: Some(self.to_tree()?),
+                            })
                         } else if let Some(Token::Symbol(Symbol::Semicolon)) = self.next() {
                             Ok(Function {
-                                call_conv,
                                 name,
                                 params,
                                 body: None,
@@ -155,7 +131,7 @@ impl ToTree<Function> for Tokens<'_> {
 // BLOCK ITEM
 #[derive(Debug)]
 pub enum BlockItem {
-    Statement(Statement),
+    Statement(Box<Statement>),
     Declaration(Declarations),
 }
 
@@ -164,7 +140,7 @@ impl ToTree<BlockItem> for Tokens<'_> {
         if let Some(Token::Keyword(Keyword::Int)) = self.peek() {
             Ok(BlockItem::Declaration(self.to_tree()?))
         } else {
-            Ok(BlockItem::Statement(self.to_tree()?))
+            Ok(BlockItem::Statement(Box::new(self.to_tree()?)))
         }
     }
 }
@@ -176,8 +152,18 @@ pub enum Statement {
     Expr(ExprOpt),
     If(Expr, Rc<RefCell<Statement>>, Option<Rc<RefCell<Statement>>>),
     Block(Block),
-    For(ExprOpt, ExprOpt, ExprOpt, Rc<RefCell<Statement>>),
-    ForDecl(Declarations, ExprOpt, ExprOpt, Rc<RefCell<Statement>>),
+    For(
+        Box<ExprOpt>,
+        Box<ExprOpt>,
+        Box<ExprOpt>,
+        Rc<RefCell<Statement>>,
+    ),
+    ForDecl(
+        Declarations,
+        Box<ExprOpt>,
+        Box<ExprOpt>,
+        Rc<RefCell<Statement>>,
+    ),
     While(Expr, Rc<RefCell<Statement>>),
     Do(Expr, Rc<RefCell<Statement>>),
     Break,
@@ -186,19 +172,19 @@ pub enum Statement {
 
 impl ToTree<Statement> for Tokens<'_> {
     fn to_tree(&mut self) -> Tree<Statement> {
-        if let Some(_) = self.next_if_eq(&&Token::Keyword(Keyword::Return)) {
+        if self.next_if_eq(&&Token::Keyword(Keyword::Return)).is_some() {
             let expr = self.to_tree()?;
             if let Some(Token::Symbol(Symbol::Semicolon)) = self.next() {
                 Ok(Statement::Return(expr))
             } else {
                 Err("[Parser]: Expected ';'".to_string())
             }
-        } else if let Some(_) = self.next_if_eq(&&Token::Keyword(Keyword::If)) {
+        } else if self.next_if_eq(&&Token::Keyword(Keyword::If)).is_some() {
             if let Some(Token::Symbol(Symbol::OpenParen)) = self.next() {
                 let expr = self.to_tree()?;
                 if let Some(Token::Symbol(Symbol::CloseParen)) = self.next() {
                     let statement = Rc::new(RefCell::new(self.to_tree()?));
-                    if let Some(_) = self.next_if_eq(&&Token::Keyword(Keyword::Else)) {
+                    if self.next_if_eq(&&Token::Keyword(Keyword::Else)).is_some() {
                         Ok(Statement::If(
                             expr,
                             statement,
@@ -215,17 +201,22 @@ impl ToTree<Statement> for Tokens<'_> {
             }
         } else if let Some(Token::Symbol(Symbol::OpenBrace)) = self.peek() {
             Ok(Statement::Block(self.to_tree()?))
-        } else if let Some(_) = self.next_if_eq(&&Token::Keyword(Keyword::For)) {
+        } else if self.next_if_eq(&&Token::Keyword(Keyword::For)).is_some() {
             if let Some(Token::Symbol(Symbol::OpenParen)) = self.next() {
                 if let Some(Token::Keyword(Keyword::Int)) = self.peek() {
                     let declerations = self.to_tree()?;
-                    let expr1 = self.to_tree()?;
+                    let expr1 = Box::new(self.to_tree()?);
                     if let Some(Token::Symbol(Symbol::Semicolon)) = self.next() {
                         let expr2_cp: ExprOptCloseParen = self.to_tree()?;
                         let expr2 = expr2_cp.to_expr_opt();
                         if let Some(Token::Symbol(Symbol::CloseParen)) = self.next() {
                             let statement = Rc::new(RefCell::new(self.to_tree()?));
-                            Ok(Statement::ForDecl(declerations, expr1, expr2, statement))
+                            Ok(Statement::ForDecl(
+                                declerations,
+                                expr1,
+                                Box::new(expr2),
+                                statement,
+                            ))
                         } else {
                             Err("[Parser]: Expected ')'".to_string())
                         }
@@ -233,15 +224,15 @@ impl ToTree<Statement> for Tokens<'_> {
                         Err("[Parser]: Expected ';'".to_string())
                     }
                 } else {
-                    let expr1 = self.to_tree()?;
+                    let expr1 = Box::new(self.to_tree()?);
                     if let Some(Token::Symbol(Symbol::Semicolon)) = self.next() {
-                        let expr2 = self.to_tree()?;
+                        let expr2 = Box::new(self.to_tree()?);
                         if let Some(Token::Symbol(Symbol::Semicolon)) = self.next() {
                             let expr3_cp: ExprOptCloseParen = self.to_tree()?;
                             let expr3 = expr3_cp.to_expr_opt();
                             if let Some(Token::Symbol(Symbol::CloseParen)) = self.next() {
                                 let statement = Rc::new(RefCell::new(self.to_tree()?));
-                                Ok(Statement::For(expr1, expr2, expr3, statement))
+                                Ok(Statement::For(expr1, expr2, Box::new(expr3), statement))
                             } else {
                                 Err("[Parser]: Expected ')'".to_string())
                             }
@@ -255,7 +246,7 @@ impl ToTree<Statement> for Tokens<'_> {
             } else {
                 Err("[Parser]: Expected '('".to_string())
             }
-        } else if let Some(_) = self.next_if_eq(&&Token::Keyword(Keyword::While)) {
+        } else if self.next_if_eq(&&Token::Keyword(Keyword::While)).is_some() {
             if let Some(Token::Symbol(Symbol::OpenParen)) = self.next() {
                 let expr = self.to_tree()?;
                 if let Some(Token::Symbol(Symbol::CloseParen)) = self.next() {
@@ -267,7 +258,7 @@ impl ToTree<Statement> for Tokens<'_> {
             } else {
                 Err("[Parser]: Expected '('".to_string())
             }
-        } else if let Some(_) = self.next_if_eq(&&Token::Keyword(Keyword::Do)) {
+        } else if self.next_if_eq(&&Token::Keyword(Keyword::Do)).is_some() {
             let statement = Rc::new(RefCell::new(self.to_tree()?));
             if let Some(Token::Keyword(Keyword::While)) = self.next() {
                 if let Some(Token::Symbol(Symbol::OpenParen)) = self.next() {
@@ -287,13 +278,16 @@ impl ToTree<Statement> for Tokens<'_> {
             } else {
                 Err("[Parser]: Expected 'while'".to_string())
             }
-        } else if let Some(_) = self.next_if_eq(&&Token::Keyword(Keyword::Break)) {
+        } else if self.next_if_eq(&&Token::Keyword(Keyword::Break)).is_some() {
             if let Some(Token::Symbol(Symbol::Semicolon)) = self.next() {
                 Ok(Statement::Break)
             } else {
                 Err("[Parser]: Expected ';'".to_string())
             }
-        } else if let Some(_) = self.next_if_eq(&&Token::Keyword(Keyword::Continue)) {
+        } else if self
+            .next_if_eq(&&Token::Keyword(Keyword::Continue))
+            .is_some()
+        {
             if let Some(Token::Symbol(Symbol::Semicolon)) = self.next() {
                 Ok(Statement::Continue)
             } else {
@@ -321,7 +315,10 @@ impl ToTree<Block> for Tokens<'_> {
         let mut items = Vec::new();
         if let Some(Token::Symbol(Symbol::OpenBrace)) = self.next() {
             loop {
-                if let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::CloseBrace)) {
+                if self
+                    .next_if_eq(&&Token::Symbol(Symbol::CloseBrace))
+                    .is_some()
+                {
                     break Ok(Block { items });
                 }
                 items.push(self.to_tree()?);
@@ -340,11 +337,14 @@ pub struct Declarations {
 
 impl ToTree<Declarations> for Tokens<'_> {
     fn to_tree(&mut self) -> Tree<Declarations> {
-        if let Some(_) = self.next_if_eq(&&Token::Keyword(Keyword::Int)) {
+        if self.next_if_eq(&&Token::Keyword(Keyword::Int)).is_some() {
             let mut declarations = Vec::new();
 
             declarations.push(if let Some(Token::Identifier(id)) = self.next() {
-                if let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::Assignment)) {
+                if self
+                    .next_if_eq(&&Token::Symbol(Symbol::Assignment))
+                    .is_some()
+                {
                     let expr = self.to_tree()?;
                     (id.clone(), Some(expr))
                 } else {
@@ -354,9 +354,12 @@ impl ToTree<Declarations> for Tokens<'_> {
                 return Err("[Parser]: Expected identifier".to_string());
             });
 
-            while let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::Comma)) {
+            while self.next_if_eq(&&Token::Symbol(Symbol::Comma)).is_some() {
                 declarations.push(if let Some(Token::Identifier(id)) = self.next() {
-                    if let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::Assignment)) {
+                    if self
+                        .next_if_eq(&&Token::Symbol(Symbol::Assignment))
+                        .is_some()
+                    {
                         let expr = self.to_tree()?;
                         (id.clone(), Some(expr))
                     } else {
@@ -424,7 +427,7 @@ impl ExprOptCloseParen {
 #[derive(Debug, Clone)]
 pub enum Expr {
     Assignment(String, AssignmentOp, Rc<RefCell<Expr>>),
-    ConditionalExpr(ConditionalExpr),
+    ConditionalExpr(Box<ConditionalExpr>),
 }
 
 #[derive(Debug, Clone)]
@@ -482,29 +485,31 @@ impl ToTree<Expr> for Tokens<'_> {
                 self.next();
                 Ok(Expr::Assignment(
                     id.clone(),
-                    s.into(),
+                    s.clone().into(),
                     Rc::new(RefCell::new(self.to_tree()?)),
                 ))
             } else {
-                Ok(Expr::ConditionalExpr(self.to_tree()?))
+                Ok(Expr::ConditionalExpr(Box::new(self.to_tree()?)))
             }
         } else {
-            Ok(Expr::ConditionalExpr(self.to_tree()?))
+            Ok(Expr::ConditionalExpr(Box::new(self.to_tree()?)))
         }
     }
 }
+
+type ExprRef = Rc<RefCell<Expr>>;
 
 // CONDITIONAL EXPR
 #[derive(Debug, Clone)]
 pub struct ConditionalExpr {
     pub log_or_expr: LogOrExpr,
-    pub options: Option<(Rc<RefCell<Expr>>, Rc<RefCell<Expr>>)>,
+    pub options: Option<(ExprRef, ExprRef)>,
 }
 
 impl ToTree<ConditionalExpr> for Tokens<'_> {
     fn to_tree(&mut self) -> Tree<ConditionalExpr> {
         let log_or_expr = self.to_tree()?;
-        if let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::QMark)) {
+        if self.next_if_eq(&&Token::Symbol(Symbol::QMark)).is_some() {
             let expr1 = RefCell::new(self.to_tree()?);
             if let Some(Token::Symbol(Symbol::Colon)) = self.next() {
                 let expr2 = RefCell::new(self.to_tree()?);
@@ -536,7 +541,7 @@ impl ToTree<LogOrExpr> for Tokens<'_> {
         let log_and_expr = self.to_tree()?;
         let mut log_and_exprs = Vec::new();
 
-        while let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::Or)) {
+        while self.next_if_eq(&&Token::Symbol(Symbol::Or)).is_some() {
             log_and_exprs.push(self.to_tree()?);
         }
 
@@ -559,7 +564,7 @@ impl ToTree<LogAndExpr> for Tokens<'_> {
         let bit_or_expr = self.to_tree()?;
         let mut bit_or_exprs = Vec::new();
 
-        while let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::And)) {
+        while self.next_if_eq(&&Token::Symbol(Symbol::And)).is_some() {
             bit_or_exprs.push(self.to_tree()?);
         }
 
@@ -582,7 +587,7 @@ impl ToTree<BitOrExpr> for Tokens<'_> {
         let bit_xor_expr = self.to_tree()?;
         let mut bit_xor_exprs = Vec::new();
 
-        while let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::BitOr)) {
+        while self.next_if_eq(&&Token::Symbol(Symbol::BitOr)).is_some() {
             bit_xor_exprs.push(self.to_tree()?);
         }
 
@@ -605,7 +610,7 @@ impl ToTree<BitXorExpr> for Tokens<'_> {
         let bit_and_expr = self.to_tree()?;
         let mut bit_and_exprs = Vec::new();
 
-        while let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::BitXor)) {
+        while self.next_if_eq(&&Token::Symbol(Symbol::BitXor)).is_some() {
             bit_and_exprs.push(self.to_tree()?);
         }
 
@@ -628,7 +633,7 @@ impl ToTree<BitAndExpr> for Tokens<'_> {
         let eq_expr = self.to_tree()?;
         let mut eq_exprs = Vec::new();
 
-        while let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::BitAnd)) {
+        while self.next_if_eq(&&Token::Symbol(Symbol::BitAnd)).is_some() {
             eq_exprs.push(self.to_tree()?);
         }
 
@@ -659,7 +664,7 @@ impl ToTree<EqExpr> for Tokens<'_> {
         while let Some(t) =
             self.next_if(|&t| matches!(t, Token::Symbol(Symbol::IsEqual | Symbol::NotEqual)))
         {
-            rel_exprs.push((t.into(), self.to_tree()?));
+            rel_exprs.push((t.clone().into(), self.to_tree()?));
         }
 
         Ok(EqExpr {
@@ -678,13 +683,13 @@ pub struct RelExpr {
 
 #[derive(Debug, Clone)]
 pub enum RelOp {
-    LT,
-    GT,
-    LTE,
-    GTE,
+    Lt,
+    Gt,
+    Lte,
+    Gte,
 }
 
-gen_into!(Token -> RelOp: [ Token::Symbol(Symbol::LT) => RelOp::LT, Token::Symbol(Symbol::GT) => RelOp::GT, Token::Symbol(Symbol::LTE) => RelOp::LTE, Token::Symbol(Symbol::GTE) => RelOp::GTE ]);
+gen_into!(Token -> RelOp: [ Token::Symbol(Symbol::Lt) => RelOp::Lt, Token::Symbol(Symbol::Gt) => RelOp::Gt, Token::Symbol(Symbol::Lte) => RelOp::Lte, Token::Symbol(Symbol::Gte) => RelOp::Gte ]);
 
 impl ToTree<RelExpr> for Tokens<'_> {
     fn to_tree(&mut self) -> Tree<RelExpr> {
@@ -694,10 +699,10 @@ impl ToTree<RelExpr> for Tokens<'_> {
         while let Some(t) = self.next_if(|&t| {
             matches!(
                 t,
-                Token::Symbol(Symbol::LT | Symbol::GT | Symbol::LTE | Symbol::GTE)
+                Token::Symbol(Symbol::Lt | Symbol::Gt | Symbol::Lte | Symbol::Gte)
             )
         }) {
-            shift_exprs.push((t.into(), self.to_tree()?));
+            shift_exprs.push((t.clone().into(), self.to_tree()?));
         }
 
         Ok(RelExpr {
@@ -730,7 +735,7 @@ impl ToTree<ShiftExpr> for Tokens<'_> {
         while let Some(t) =
             self.next_if(|&t| matches!(t, Token::Symbol(Symbol::ShiftLeft | Symbol::ShiftRight)))
         {
-            add_exprs.push((t.into(), self.to_tree()?));
+            add_exprs.push((t.clone().into(), self.to_tree()?));
         }
 
         Ok(ShiftExpr {
@@ -766,7 +771,7 @@ impl ToTree<AddExpr> for Tokens<'_> {
         while let Some(t) =
             self.next_if(|&t| matches!(t, Token::Symbol(Symbol::Add | Symbol::Negation)))
         {
-            terms.push((t.into(), self.to_tree()?));
+            terms.push((t.clone().into(), self.to_tree()?));
         }
 
         Ok(AddExpr { term, terms })
@@ -788,7 +793,7 @@ impl ToTree<Term> for Tokens<'_> {
         while let Some(t) =
             self.next_if(|&t| matches!(t, Token::Symbol(Symbol::Mult | Symbol::Div | Symbol::Mod)))
         {
-            factors.push((t.into(), self.to_tree()?));
+            factors.push((t.clone().into(), self.to_tree()?));
         }
 
         Ok(Term { factor, factors })
@@ -823,37 +828,49 @@ pub enum UnaryOp {
 
 impl ToTree<Factor> for Tokens<'_> {
     fn to_tree(&mut self) -> Tree<Factor> {
-        if let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::OpenParen)) {
+        if self
+            .next_if_eq(&&Token::Symbol(Symbol::OpenParen))
+            .is_some()
+        {
             let expr = RefCell::new(self.to_tree()?);
             if let Some(Token::Symbol(Symbol::CloseParen)) = self.next() {
                 Ok(Factor::Expr(Rc::new(expr)))
             } else {
                 Err("[Parser]: Expected ')'".to_string())
             }
-        } else if let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::Not)) {
+        } else if self.next_if_eq(&&Token::Symbol(Symbol::Not)).is_some() {
             Ok(Factor::UnaryOp(
                 UnaryOp::Not,
                 Rc::new(RefCell::new(self.to_tree()?)),
             ))
-        } else if let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::Complement)) {
+        } else if self
+            .next_if_eq(&&Token::Symbol(Symbol::Complement))
+            .is_some()
+        {
             Ok(Factor::UnaryOp(
                 UnaryOp::Complement,
                 Rc::new(RefCell::new(self.to_tree()?)),
             ))
-        } else if let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::Negation)) {
+        } else if self.next_if_eq(&&Token::Symbol(Symbol::Negation)).is_some() {
             Ok(Factor::UnaryOp(
                 UnaryOp::Negation,
                 Rc::new(RefCell::new(self.to_tree()?)),
             ))
         } else if let Some(&Token::Integer(i)) = self.next_if(|&t| matches!(t, Token::Integer(_))) {
             Ok(Factor::Constant(i))
-        } else if let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::Increment)) {
+        } else if self
+            .next_if_eq(&&Token::Symbol(Symbol::Increment))
+            .is_some()
+        {
             if let Some(Token::Identifier(id)) = self.next() {
                 Ok(Factor::Prefix(IncDec::Incremenet, id.clone()))
             } else {
                 Err("Expected identifier".to_string())
             }
-        } else if let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::Decrement)) {
+        } else if self
+            .next_if_eq(&&Token::Symbol(Symbol::Decrement))
+            .is_some()
+        {
             if let Some(Token::Identifier(id)) = self.next() {
                 Ok(Factor::Prefix(IncDec::Decrement, id.clone()))
             } else {
@@ -866,16 +883,20 @@ impl ToTree<Factor> for Tokens<'_> {
                 if let Some(Token::Identifier(id)) = self.next() {
                     self.next();
 
-                    if let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::CloseParen)) {
+                    if self
+                        .next_if_eq(&&Token::Symbol(Symbol::CloseParen))
+                        .is_some()
+                    {
                         Ok(Factor::FunctionCall(id.clone(), Vec::new()))
                     } else {
                         let mut args = Vec::new();
                         loop {
                             args.push(self.to_tree()?);
-                            if let Some(_) = self.next_if_eq(&&Token::Symbol(Symbol::Comma)) {
+                            if self.next_if_eq(&&Token::Symbol(Symbol::Comma)).is_some() {
                                 continue;
-                            } else if let Some(_) =
-                                self.next_if_eq(&&Token::Symbol(Symbol::CloseParen))
+                            } else if self
+                                .next_if_eq(&&Token::Symbol(Symbol::CloseParen))
+                                .is_some()
                             {
                                 break;
                             } else {
@@ -912,7 +933,7 @@ impl ToTree<PostfixID> for Tokens<'_> {
                 {
                     Ok(PostfixID {
                         id: id.clone(),
-                        postfix: Some(s.into()),
+                        postfix: Some(s.clone().into()),
                     })
                 } else {
                     Ok(PostfixID {

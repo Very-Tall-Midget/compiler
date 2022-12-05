@@ -10,7 +10,7 @@ pub enum Token {
     Identifier(String),
     Integer(u32),
     Symbol(Symbol),
-    EOF,
+    Eof,
 }
 
 trait ToTokens {
@@ -21,62 +21,50 @@ impl ToTokens for Peekable<Chars<'_>> {
     fn to_tokens(&mut self) -> Result<Vec<Token>, String> {
         let mut out = Vec::new();
 
-        loop {
-            if let Some(c) = self.next() {
-                if c.is_whitespace() {
-                    continue;
+        while let Some(c) = self.next() {
+            if c.is_whitespace() {
+                continue;
+            }
+
+            if c.is_ascii_digit() {
+                let mut i = c.to_digit(10).unwrap();
+                while let Some(c) = self.next_if(|&c| c.is_ascii_digit()) {
+                    i *= 10;
+                    i += c.to_digit(10).unwrap();
+                }
+                out.push(Token::Integer(i));
+            } else if c.is_ascii_alphanumeric() || c == '_' {
+                let mut id = String::from(c);
+                while let Some(c) = self.next_if(|&c| c.is_ascii_alphanumeric() || c == '_') {
+                    id.push(c);
                 }
 
-                if c.is_ascii_digit() {
-                    let mut i = c.to_digit(10).unwrap();
-                    loop {
-                        if let Some(c) = self.next_if(|&c| c.is_ascii_digit()) {
-                            i *= 10;
-                            i += c.to_digit(10).unwrap();
-                        } else {
-                            break;
-                        }
-                    }
-                    out.push(Token::Integer(i));
-                } else if c.is_ascii_alphanumeric() || c == '_' {
-                    let mut id = String::from(c);
-                    loop {
-                        if let Some(c) = self.next_if(|&c| c.is_ascii_alphanumeric() || c == '_') {
-                            id.push(c);
-                        } else {
-                            break;
-                        }
-                    }
-
-                    if let Some(keyword) = id.to_keyword() {
-                        out.push(Token::Keyword(keyword));
-                    } else {
-                        out.push(Token::Identifier(id));
-                    }
+                if let Some(keyword) = id.to_keyword() {
+                    out.push(Token::Keyword(keyword));
                 } else {
-                    let s = self.to_symbol(c)?;
-                    if s == Symbol::Comment {
-                        loop {
-                            let next = self.peek();
-                            if let Some('\n') = next {
-                                self.next();
-                                break;
-                            }
-                            if let None = next {
-                                break;
-                            }
-                            self.next();
-                        }
-                    } else {
-                        out.push(Token::Symbol(s));
-                    }
+                    out.push(Token::Identifier(id));
                 }
             } else {
-                break;
+                let s = self.to_symbol(c)?;
+                if s == Symbol::Comment {
+                    loop {
+                        let next = self.peek();
+                        if let Some('\n') = next {
+                            self.next();
+                            break;
+                        }
+                        if next.is_none() {
+                            break;
+                        }
+                        self.next();
+                    }
+                } else {
+                    out.push(Token::Symbol(s));
+                }
             }
         }
 
-        out.push(Token::EOF);
+        out.push(Token::Eof);
 
         Ok(out)
     }
@@ -94,8 +82,6 @@ pub enum Keyword {
     Do,
     Break,
     Continue,
-    Cdecl,
-    Syscall,
 }
 
 trait Keywords {
@@ -122,10 +108,6 @@ impl Keywords for String {
             Some(Keyword::Break)
         } else if self == "continue" {
             Some(Keyword::Continue)
-        } else if self == "__cdecl" {
-            Some(Keyword::Cdecl)
-        } else if self == "__syscall" {
-            Some(Keyword::Syscall)
         } else {
             None
         }
@@ -153,10 +135,10 @@ pub enum Symbol {
     Or,         // ||
     IsEqual,    // ==
     NotEqual,   // !=
-    LT,         // <
-    GT,         // >
-    LTE,        // <=
-    GTE,        // >=
+    Lt,         // <
+    Gt,         // >
+    Lte,        // <=
+    Gte,        // >=
     ShiftLeft,  // <<
     ShiftRight, // >>
     BitOr,      // |
@@ -193,9 +175,9 @@ impl Symbols for Peekable<Chars<'_>> {
             ')' => Ok(Symbol::CloseParen),
             ';' => Ok(Symbol::Semicolon),
             '-' => {
-                if let Some(_) = self.next_if_eq(&'-') {
+                if self.next_if_eq(&'-').is_some() {
                     Ok(Symbol::Decrement)
-                } else if let Some(_) = self.next_if_eq(&'=') {
+                } else if self.next_if_eq(&'=').is_some() {
                     Ok(Symbol::SubAssign)
                 } else {
                     Ok(Symbol::Negation)
@@ -203,101 +185,97 @@ impl Symbols for Peekable<Chars<'_>> {
             }
             '~' => Ok(Symbol::Complement),
             '!' => {
-                if let Some(_) = self.next_if_eq(&'=') {
+                if self.next_if_eq(&'=').is_some() {
                     Ok(Symbol::NotEqual)
                 } else {
                     Ok(Symbol::Not)
                 }
             }
             '+' => {
-                if let Some(_) = self.next_if_eq(&'+') {
+                if self.next_if_eq(&'+').is_some() {
                     Ok(Symbol::Increment)
-                } else if let Some(_) = self.next_if_eq(&'=') {
+                } else if self.next_if_eq(&'=').is_some() {
                     Ok(Symbol::AddAssign)
                 } else {
                     Ok(Symbol::Add)
                 }
             }
             '*' => {
-                if let Some(_) = self.next_if_eq(&'=') {
+                if self.next_if_eq(&'=').is_some() {
                     Ok(Symbol::MultAssign)
                 } else {
                     Ok(Symbol::Mult)
                 }
             }
             '/' => {
-                if let Some(_) = self.next_if_eq(&'=') {
+                if self.next_if_eq(&'=').is_some() {
                     Ok(Symbol::DivAssign)
-                } else if let Some(_) = self.next_if_eq(&'/') {
+                } else if self.next_if_eq(&'/').is_some() {
                     Ok(Symbol::Comment)
                 } else {
                     Ok(Symbol::Div)
                 }
             }
             '%' => {
-                if let Some(_) = self.next_if_eq(&'=') {
+                if self.next_if_eq(&'=').is_some() {
                     Ok(Symbol::ModAssign)
                 } else {
                     Ok(Symbol::Mod)
                 }
             }
             '&' => {
-                if let Some(_) = self.next_if_eq(&'&') {
+                if self.next_if_eq(&'&').is_some() {
                     Ok(Symbol::And)
+                } else if self.next_if_eq(&'=').is_some() {
+                    Ok(Symbol::BAndAssign)
                 } else {
-                    if let Some(_) = self.next_if_eq(&'=') {
-                        Ok(Symbol::BAndAssign)
-                    } else {
-                        Ok(Symbol::BitAnd)
-                    }
+                    Ok(Symbol::BitAnd)
                 }
             }
             '|' => {
-                if let Some(_) = self.next_if_eq(&'|') {
+                if self.next_if_eq(&'|').is_some() {
                     Ok(Symbol::Or)
+                } else if self.next_if_eq(&'=').is_some() {
+                    Ok(Symbol::BOrAssign)
                 } else {
-                    if let Some(_) = self.next_if_eq(&'=') {
-                        Ok(Symbol::BOrAssign)
-                    } else {
-                        Ok(Symbol::BitOr)
-                    }
+                    Ok(Symbol::BitOr)
                 }
             }
             '=' => {
-                if let Some(_) = self.next_if_eq(&'=') {
+                if self.next_if_eq(&'=').is_some() {
                     Ok(Symbol::IsEqual)
                 } else {
                     Ok(Symbol::Assignment)
                 }
             }
             '<' => {
-                if let Some(_) = self.next_if_eq(&'=') {
-                    Ok(Symbol::LTE)
-                } else if let Some(_) = self.next_if_eq(&'<') {
-                    if let Some(_) = self.next_if_eq(&'=') {
+                if self.next_if_eq(&'=').is_some() {
+                    Ok(Symbol::Lte)
+                } else if self.next_if_eq(&'<').is_some() {
+                    if self.next_if_eq(&'=').is_some() {
                         Ok(Symbol::SLAssign)
                     } else {
                         Ok(Symbol::ShiftLeft)
                     }
                 } else {
-                    Ok(Symbol::LT)
+                    Ok(Symbol::Lt)
                 }
             }
             '>' => {
-                if let Some(_) = self.next_if_eq(&'=') {
-                    Ok(Symbol::GTE)
-                } else if let Some(_) = self.next_if_eq(&'>') {
-                    if let Some(_) = self.next_if_eq(&'=') {
+                if self.next_if_eq(&'=').is_some() {
+                    Ok(Symbol::Gte)
+                } else if self.next_if_eq(&'>').is_some() {
+                    if self.next_if_eq(&'=').is_some() {
                         Ok(Symbol::SRAssign)
                     } else {
                         Ok(Symbol::ShiftRight)
                     }
                 } else {
-                    Ok(Symbol::GT)
+                    Ok(Symbol::Gt)
                 }
             }
             '^' => {
-                if let Some(_) = self.next_if_eq(&'=') {
+                if self.next_if_eq(&'=').is_some() {
                     Ok(Symbol::BXorAssign)
                 } else {
                     Ok(Symbol::BitXor)

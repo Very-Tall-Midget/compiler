@@ -1,5 +1,5 @@
 <program> ::= { <function> | <declarations> }
-<function> ::= "int" [ <call-conv> ] <id> "(" [ "int" <id> { "," "int" <id> } ] ")" ( "{" { <block-item } "}" | ";" )
+<function> ::= "int" <id> "(" [ "int" <id> { "," "int" <id> } ] ")" ( "{" { <block-item> } "}" | ";" )
 <block-item> ::= <statement> | <declaration>
 <statement> ::= "return" <expr> ";" |
                 | <expr-opt> ";"
@@ -34,4 +34,3 @@
 <unary-op> ::= "!" | "~" | "-"
 <assignment-op> ::= "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "<<=" | ">>=" | "&=" | "|=" | "^="
 <function-call> ::= <id> "(" [ <expr> { "," <expr> } ] ")"
-<call-conv> ::= "__cdecl" | "__syscall"

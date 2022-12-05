@@ -18,69 +18,60 @@ impl Assembly {
         self.asm.extend(asm.asm.iter().cloned());
     }
 
+    pub fn last(&self) -> Option<&OpCode> {
+        self.asm.last()
+    }
+
     pub fn to_string(&self) -> Result<String, String> {
-        let mut res = String::new();
+        let mut res = String::from(
+            "bits 64
+default rel
+segment .text
+global _start
+extern ExitProcess
+_start:
+    call main
+    mov rcx, rax
+    call ExitProcess\n",
+        );
         for op in &self.asm {
             match op {
                 OpCode::GlobalVariable(id, value) => {
-                    if *value == 0 {
-                        res.push_str(&format!(
-                            "    .globl {0}\n    .bss\n    .align 4\n{0}:\n    .zero 4\n",
-                            id
-                        ));
-                    } else {
-                        res.push_str(&format!(
-                            "    .globl {0}\n    .data\n    .align 4\n{0}:\n    .long {1}\n",
-                            id, value
-                        ));
-                    }
+                    res.push_str(&format!("section .data\n    {} dq {}\n", id, value))
                 }
-                OpCode::FunctionDecl(name) => {
-                    res.push_str(&format!("    .globl {}\n    .text\n", name))
-                }
+                OpCode::FunctionDecl(_name) => res.push_str("section .text\n"),
                 OpCode::StartFunction(name) => res.push_str(&format!("{}:\n", name)),
                 OpCode::Label(label) => res.push_str(&format!("{}:\n", label)),
                 OpCode::Call(name) => res.push_str(&format!("    call {}\n", name)),
-                OpCode::PreserveStack => res.push_str("    push %rbp\n    mov %rsp, %rbp\n"),
-                OpCode::RestoreStack => res.push_str("    mov %rbp, %rsp\n    pop %rbp\n"),
-                OpCode::Push(location) => res.push_str(&format!(
-                    "    push{1} {0}\n",
-                    location,
-                    location.size.to_string()
-                )),
+                OpCode::PreserveStack => res.push_str("    push rbp\n    mov rbp, rsp\n"),
+                OpCode::RestoreStack => res.push_str("    leave\n"),
+                OpCode::Push(location) => res.push_str(&format!("    push {}\n", location,)),
                 OpCode::PushImmediate(value) => res.push_str(&format!("    push ${}\n", value)),
-                OpCode::Pop(location) => res.push_str(&format!(
-                    "    pop{1} {0}\n",
-                    location,
-                    location.size.to_string()
-                )),
+                OpCode::Pop(location) => res.push_str(&format!("    pop {}\n", location)),
                 OpCode::Mov(from, to) => {
                     if from.size != to.size {
-                        return Err(format!("Cannot move {} into {}, different sizes", from, to));
+                        return Err(format!(
+                            "Cannot move {} into {}, different sizes",
+                            from.name, to.name
+                        ));
                     }
-                    res.push_str(&format!("    mov {}, {}\n", from, to));
+                    res.push_str(&format!("    mov {}, {}\n", to, from));
                 }
-                OpCode::MovImmediate(value, location) => res.push_str(&format!(
-                    "    mov{2} ${0}, {1}\n",
-                    value,
-                    location,
-                    location.size.to_string()
-                )),
+                OpCode::MovImmediate(value, location) => {
+                    res.push_str(&format!("    mov {}, {}\n", location, value))
+                }
                 OpCode::Compare(left, right) => {
                     if left.size != right.size {
                         return Err(format!(
                             "Cannot compare {} and {}, different sizes",
-                            left, right
+                            left.name, right.name
                         ));
                     }
-                    res.push_str(&format!("    cmp {}, {}\n", left, right));
+                    res.push_str(&format!("    cmp {}, {}\n", right, left));
                 }
-                OpCode::CompareImmediate(value, location) => res.push_str(&format!(
-                    "    cmp{2} ${0}, {1}\n",
-                    value,
-                    location,
-                    location.size.to_string()
-                )),
+                OpCode::CompareImmediate(value, location) => {
+                    res.push_str(&format!("    cmp {}, {}\n", location, value))
+                }
                 OpCode::Jump(condition, label) => {
                     res.push_str(&format!("    j{} {}\n", condition.to_string(), label));
                 }
@@ -88,34 +79,34 @@ impl Assembly {
                     if left.size != right.size {
                         return Err(format!(
                             "Cannot add {} and {}, different sizes",
-                            left, right
+                            left.name, right.name
                         ));
                     }
-                    res.push_str(&format!("    add {}, {}\n", left, right));
+                    res.push_str(&format!("    add {}, {}\n", right, left));
                 }
-                OpCode::AddImmediate(value, location) => res.push_str(&format!(
-                    "    add{2} ${0}, {1}\n",
-                    value,
-                    location,
-                    location.size.to_string()
-                )),
+                OpCode::AddImmediate(value, location) => {
+                    res.push_str(&format!("    add {}, {}\n", location, value))
+                }
                 OpCode::Sub(left, right) => {
                     if left.size != right.size {
                         return Err(format!(
                             "Cannot subtract {} and {}, different sizes",
-                            left, right
+                            left.name, right.name
                         ));
                     }
-                    res.push_str(&format!("    sub {}, {}\n", left, right));
+                    res.push_str(&format!("    sub {}, {}\n", right, left));
+                }
+                OpCode::SubImmediate(value, location) => {
+                    res.push_str(&format!("    sub {}, {}\n", location, value))
                 }
                 OpCode::Mult(left, right) => {
                     if left.size != right.size {
                         return Err(format!(
                             "Cannot multiply {} and {}, different sizes",
-                            left, right
+                            left.name, right.name
                         ));
                     }
-                    res.push_str(&format!("    imul {}, {}\n", left, right));
+                    res.push_str(&format!("    imul {}, {}\n", right, left));
                 }
                 OpCode::IDiv(location) => res.push_str(&format!("    idiv {}\n", location)),
                 OpCode::SignExtend => res.push_str("    cqo\n"),
@@ -123,7 +114,7 @@ impl Assembly {
                     if left.size != LocationSize::Byte {
                         return Err(format!(
                             "Cannot shift {1} left by {0}, wrong size ({0} must be a byte)",
-                            left, right
+                            left.name, right.name
                         ));
                     }
                     res.push_str(&format!("    shl {}, {}\n", left, right));
@@ -132,60 +123,47 @@ impl Assembly {
                     if left.size != LocationSize::Byte {
                         return Err(format!(
                             "Cannot shift {1} right by {0}, wrong size ({0} must be a byte)",
-                            left, right
+                            left.name, right.name
                         ));
                     }
                     res.push_str(&format!("    shr {}, {}\n", left, right));
                 }
-                OpCode::Increment(location) => res.push_str(&format!(
-                    "    inc{} {}\n",
-                    location.size.to_string(),
-                    location
-                )),
-                OpCode::Decrement(location) => res.push_str(&format!(
-                    "    dec{} {}\n",
-                    location.size.to_string(),
-                    location
-                )),
+                OpCode::Increment(location) => res.push_str(&format!("    inc {}\n", location)),
+                OpCode::Decrement(location) => res.push_str(&format!("    dec {}\n", location)),
                 OpCode::And(left, right) => {
                     if left.size != right.size {
                         return Err(format!(
                             "Cannot and {} and {}, different sizes",
-                            left, right
+                            left.name, right.name
                         ));
                     }
-                    res.push_str(&format!("    and {}, {}\n", left, right));
+                    res.push_str(&format!("    add {}, {}\n", right, left));
                 }
                 OpCode::Xor(left, right) => {
                     if left.size != right.size {
                         return Err(format!(
                             "Cannot xor {} and {}, different sizes",
-                            left, right
+                            left.name, right.name
                         ));
                     }
-                    res.push_str(&format!("    xor {}, {}\n", left, right));
+                    res.push_str(&format!("    xor {}, {}\n", right, left));
                 }
                 OpCode::Or(left, right) => {
                     if left.size != right.size {
-                        return Err(format!("Cannot or {} and {}, different sizes", left, right));
+                        return Err(format!(
+                            "Cannot or {} and {}, different sizes",
+                            left.name, right.name
+                        ));
                     }
-                    res.push_str(&format!("    or {}, {}\n", left, right));
+                    res.push_str(&format!("    or {}, {}\n", right, left));
                 }
-                OpCode::Negation(location) => res.push_str(&format!(
-                    "    neg{} {}\n",
-                    location.size.to_string(),
-                    location
-                )),
-                OpCode::Not(location) => res.push_str(&format!(
-                    "    not{} {}\n",
-                    location.size.to_string(),
-                    location
-                )),
+                OpCode::Negation(location) => res.push_str(&format!("    neg {}\n", location)),
+                OpCode::Not(location) => res.push_str(&format!("    not {}\n", location)),
                 OpCode::Set(condition, location) => {
                     if location.size != LocationSize::Byte {
                         return Err(format!(
                             "Cannot set {0} with set{1}, wrong size ({0} must be a byte)",
-                            location,
+                            location.name,
                             condition.to_string()
                         ));
                     }
@@ -215,7 +193,8 @@ impl Assembly {
                             }
                             OpCode::MovImmediate(last_mov_val, last_mov_reg) => {
                                 if last_mov_reg == from {
-                                    last_mov = Some(OpCode::MovImmediate(*last_mov_val, to.clone()));
+                                    last_mov =
+                                        Some(OpCode::MovImmediate(*last_mov_val, to.clone()));
                                 } else {
                                     res.push(last_mov_op.clone());
                                     last_mov = Some(opcode.clone());
@@ -254,42 +233,86 @@ pub struct Location {
     pub size: LocationSize,
 }
 
+#[allow(dead_code)]
 impl Location {
     pub fn rax() -> Self {
         Location {
-            name: "%rax".to_string(),
+            name: "rax".to_string(),
             size: LocationSize::Qword,
         }
     }
 
     pub fn rcx() -> Self {
         Location {
-            name: "%rcx".to_string(),
+            name: "rcx".to_string(),
             size: LocationSize::Qword,
+        }
+    }
+
+    pub fn r10() -> Self {
+        Location {
+            name: "r10".to_string(),
+            size: LocationSize::Qword,
+        }
+    }
+
+    pub fn r10l() -> Self {
+        Location {
+            name: "r10l".to_string(),
+            size: LocationSize::Byte,
         }
     }
 
     pub fn rdx() -> Self {
         Location {
-            name: "%rdx".to_string(),
+            name: "rdx".to_string(),
+            size: LocationSize::Qword,
+        }
+    }
+
+    pub fn r8() -> Self {
+        Location {
+            name: "r8".to_string(),
+            size: LocationSize::Qword,
+        }
+    }
+
+    pub fn r9() -> Self {
+        Location {
+            name: "r9".to_string(),
             size: LocationSize::Qword,
         }
     }
 
     pub fn rsp() -> Self {
         Location {
-            name: "%rsp".to_string(),
+            name: "rsp".to_string(),
             size: LocationSize::Qword,
+        }
+    }
+
+    pub fn al() -> Self {
+        Location {
+            name: "al".to_string(),
+            size: LocationSize::Byte,
+        }
+    }
+
+    pub fn cl() -> Self {
+        Location {
+            name: "cl".to_string(),
+            size: LocationSize::Byte,
         }
     }
 }
 
 impl Display for Location {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.name)
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{} {}", self.size, self.name)
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LocationSize {
     Byte,
@@ -298,15 +321,18 @@ pub enum LocationSize {
     Qword,
 }
 
-impl ToString for LocationSize {
-    fn to_string(&self) -> String {
-        match self {
-            LocationSize::Byte => "b",
-            LocationSize::Word => "w",
-            LocationSize::Dword => "l",
-            LocationSize::Qword => "q",
-        }
-        .to_string()
+impl Display for LocationSize {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                LocationSize::Byte => "byte",
+                LocationSize::Word => "word",
+                LocationSize::Dword => "dword",
+                LocationSize::Qword => "qword",
+            }
+        )
     }
 }
 
@@ -333,6 +359,7 @@ pub enum OpCode {
     Add(Location, Location),     // left, right
     AddImmediate(i32, Location), // value, loction
     Sub(Location, Location),     // left, right
+    SubImmediate(i32, Location), // value, loction
     Mult(Location, Location),    // left, right
     IDiv(Location),              // loction
     SignExtend,
@@ -352,6 +379,7 @@ pub enum OpCode {
     Return,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum JumpCondition {
     Unconditional,

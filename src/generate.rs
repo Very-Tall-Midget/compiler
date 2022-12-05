@@ -8,9 +8,9 @@ use super::ast::*;
 
 macro_rules! gen_into(
     ($from:ident -> $to:ident: [ $($match_from:ident => $match_to:ident),+ $(,)? ]) => {
-        impl Into<$to> for &$from {
-            fn into(self) -> $to {
-                match self {
+        impl From<$from> for $to {
+            fn from(val: $from) -> $to {
+                match val {
                     $($from::$match_from => $to::$match_to),+,
                 }
             }
@@ -27,19 +27,19 @@ pub fn generate(tree: &Program) -> Result<Assembly, String> {
         continue_label: None,
         break_label: None,
     };
-    
+
     tree.to_assembly(&mut ctx)
 }
 
 fn get_label() -> String {
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
-    format!("_LABEL_{}", COUNTER.fetch_add(1, Ordering::Relaxed))
+    format!("LABEL_{}", COUNTER.fetch_add(1, Ordering::Relaxed))
 }
 
 #[derive(Debug, Clone)]
 pub struct Context {
     pub var_map: HashMap<String, String>, // identifier, location
-    pub func_map: HashMap<String, (usize, bool, CallingConv)>, // identifier, (number of parameters, is defined, calling convention)
+    pub func_map: HashMap<String, (usize, bool)>, // identifier, (number of parameters, is defined, calling convention)
     pub scope: HashSet<String>,
     pub stack_index: i32,
     pub break_label: Option<String>,
@@ -49,7 +49,7 @@ pub struct Context {
 #[derive(Debug, Clone)]
 pub struct CheckContext {
     pub var_map: HashSet<String>,
-    pub func_map: HashMap<String, (usize, bool, CallingConv)>, // identifier, (number of parameters, is defined, calling convention)
+    pub func_map: HashMap<String, (usize, bool)>, // identifier, (number of parameters, is defined, calling convention)
     pub scope: HashSet<String>,
     pub break_label: bool,
     pub continue_label: bool,
@@ -72,7 +72,7 @@ impl ToAssembly for Program {
                         if ctx.func_map.contains_key(id) {
                             return Err(format!("[Code Generation]: Global variable '{}' already defined as a function", id));
                         }
-                        ctx.var_map.insert(id.clone(), format!("{}(%rip)", id));
+                        ctx.var_map.insert(id.clone(), format!("[{}]", id));
                         if let Some(expr) = expr {
                             if *global_map.get(id).unwrap_or(&false) {
                                 return Err(format!(
@@ -96,7 +96,15 @@ impl ToAssembly for Program {
                         ));
                     }
 
-                    if let Some(_) = func.body {
+                    let mut unique_check = HashSet::new();
+                    if !func.params.iter().all(move |x| unique_check.insert(x)) {
+                        return Err(format!(
+                            "[Code Generation]: Duplicate parameter name in declaration of '{}'",
+                            func.name
+                        ));
+                    }
+
+                    if func.body.is_some() {
                         res.push(OpCode::FunctionDecl(func.name.clone()));
                         if let Some(info) = ctx.func_map.get(&func.name) {
                             if info.1 {
@@ -112,10 +120,8 @@ impl ToAssembly for Program {
                                 ));
                             }
                         }
-                        ctx.func_map.insert(
-                            func.name.clone(),
-                            (func.params.len(), true, CallingConv::Cdecl),
-                        );
+                        ctx.func_map
+                            .insert(func.name.clone(), (func.params.len(), true));
                         let mut ctx = Context {
                             var_map: ctx.var_map.clone(),
                             func_map: ctx.func_map.clone(),
@@ -124,28 +130,39 @@ impl ToAssembly for Program {
                             break_label: None,
                             continue_label: None,
                         };
-                        let mut param_offset = 16;
-                        for param in &func.params {
-                            ctx.var_map
-                                .insert(param.clone(), format!("{}(%rbp)", param_offset));
+
+                        let locations = vec![
+                            Location::rcx(),
+                            Location::rdx(),
+                            Location::r8(),
+                            Location::r9(),
+                        ];
+                        for (param, loc) in func.params.iter().take(locations.len()).zip(&locations)
+                        {
+                            ctx.var_map.insert(param.clone(), loc.name.clone());
                             ctx.scope.insert(param.clone());
-                            param_offset += 8;
                         }
-                        res.push_asm(&func.to_assembly(&mut ctx)?);
-                    } else {
-                        if let Some(info) = ctx.func_map.get(&func.name) {
-                            if info.0 != func.params.len() {
-                                return Err(format!(
-                                    "[Code Generation]: Conflicting declarations of '{}'",
-                                    func.name
-                                ));
+                        if func.params.len() > locations.len() {
+                            let mut param_offset = 56;
+                            for param in func.params.iter().skip(locations.len()) {
+                                ctx.var_map
+                                    .insert(param.clone(), format!("[rbp+{}]", param_offset));
+                                ctx.scope.insert(param.clone());
+                                param_offset += 8;
                             }
-                        } else {
-                            ctx.func_map.insert(
-                                func.name.clone(),
-                                (func.params.len(), false, func.call_conv.clone()),
-                            );
                         }
+
+                        res.push_asm(&func.to_assembly(&mut ctx)?);
+                    } else if let Some(info) = ctx.func_map.get(&func.name) {
+                        if info.0 != func.params.len() {
+                            return Err(format!(
+                                "[Code Generation]: Conflicting declarations of '{}'",
+                                func.name
+                            ));
+                        }
+                    } else {
+                        ctx.func_map
+                            .insert(func.name.clone(), (func.params.len(), false));
                     }
                 }
             }
@@ -176,7 +193,7 @@ impl ToAssembly for Program {
                                     id
                                 ));
                             } else {
-                                expr.evaluate()?; // Check the value is a constant
+                                expr.evaluate().expect("Global vars must be constant"); // Check the value is a constant
                                 global_map.insert(id.clone(), true);
                             }
                         } else {
@@ -192,7 +209,7 @@ impl ToAssembly for Program {
                         ));
                     }
 
-                    if let Some(_) = func.body {
+                    if func.body.is_some() {
                         if let Some(info) = ctx.func_map.get(&func.name) {
                             if info.1 {
                                 return Err(format!(
@@ -207,10 +224,8 @@ impl ToAssembly for Program {
                                 ));
                             }
                         }
-                        ctx.func_map.insert(
-                            func.name.clone(),
-                            (func.params.len(), true, CallingConv::Cdecl),
-                        );
+                        ctx.func_map
+                            .insert(func.name.clone(), (func.params.len(), true));
                         let mut ctx = CheckContext {
                             var_map: ctx.var_map.clone(),
                             func_map: ctx.func_map.clone(),
@@ -223,20 +238,16 @@ impl ToAssembly for Program {
                             ctx.scope.insert(param.clone());
                         }
                         func.check(&mut ctx)?;
-                    } else {
-                        if let Some(info) = ctx.func_map.get(&func.name) {
-                            if info.0 != func.params.len() {
-                                return Err(format!(
-                                    "[Code Generation]: Conflicting declarations of '{}'",
-                                    func.name
-                                ));
-                            }
-                        } else {
-                            ctx.func_map.insert(
-                                func.name.clone(),
-                                (func.params.len(), false, func.call_conv.clone()),
-                            );
+                    } else if let Some(info) = ctx.func_map.get(&func.name) {
+                        if info.0 != func.params.len() {
+                            return Err(format!(
+                                "[Code Generation]: Conflicting declarations of '{}'",
+                                func.name
+                            ));
                         }
+                    } else {
+                        ctx.func_map
+                            .insert(func.name.clone(), (func.params.len(), false));
                     }
                 }
             }
@@ -264,10 +275,12 @@ impl ToAssembly for Function {
                 .to_assembly(ctx)?,
         );
 
-        // placed to return incase a return didn't happen
-        res.push(OpCode::MovImmediate(0, Location::rax()));
-        res.push(OpCode::RestoreStack);
-        res.push(OpCode::Return);
+        if !matches!(res.last(), Some(OpCode::Return)) {
+            // placed to return incase a return didn't happen
+            res.push(OpCode::MovImmediate(0, Location::rax()));
+            res.push(OpCode::RestoreStack);
+            res.push(OpCode::Return);
+        };
 
         Ok(res)
     }
@@ -632,7 +645,7 @@ impl ToAssembly for Declarations {
             } else {
                 ctx.scope.insert(id.clone());
                 ctx.var_map
-                    .insert(id.clone(), format!("{}(%rbp)", ctx.stack_index));
+                    .insert(id.clone(), format!("[rbp+{}]", ctx.stack_index));
                 if let Some(expr) = expr_opt {
                     res.push_asm(&expr.to_assembly(ctx)?);
                     res.push(OpCode::Push(Location::rax()));
@@ -707,64 +720,52 @@ impl ToAssembly for Expr {
                     match assign_op {
                         AssignmentOp::Assign => {}
                         AssignmentOp::AddAssign => {
-                            res.push(OpCode::Mov(loc.clone(), Location::rcx()));
-                            res.push(OpCode::Add(Location::rcx(), Location::rax()));
+                            res.push(OpCode::Mov(loc.clone(), Location::r10()));
+                            res.push(OpCode::Add(Location::r10(), Location::rax()));
                         }
                         AssignmentOp::SubAssign => {
-                            res.push(OpCode::Mov(Location::rax(), Location::rcx()));
+                            res.push(OpCode::Mov(Location::rax(), Location::r10()));
                             res.push(OpCode::Mov(loc.clone(), Location::rax()));
-                            res.push(OpCode::Sub(Location::rcx(), Location::rax()));
+                            res.push(OpCode::Sub(Location::r10(), Location::rax()));
                         }
                         AssignmentOp::MultAssign => {
-                            res.push(OpCode::Mov(loc.clone(), Location::rcx()));
-                            res.push(OpCode::Mult(Location::rcx(), Location::rax()));
+                            res.push(OpCode::Mov(loc.clone(), Location::r10()));
+                            res.push(OpCode::Mult(Location::r10(), Location::rax()));
                         }
                         AssignmentOp::DivAssign => {
-                            res.push(OpCode::Mov(Location::rax(), Location::rcx()));
+                            res.push(OpCode::Mov(Location::rax(), Location::r10()));
                             res.push(OpCode::Mov(loc.clone(), Location::rax()));
                             res.push(OpCode::SignExtend);
-                            res.push(OpCode::IDiv(Location::rcx()));
+                            res.push(OpCode::IDiv(Location::r10()));
                         }
                         AssignmentOp::ModAssign => {
-                            res.push(OpCode::Mov(Location::rax(), Location::rcx()));
+                            res.push(OpCode::Mov(Location::rax(), Location::r10()));
                             res.push(OpCode::Mov(loc.clone(), Location::rax()));
                             res.push(OpCode::SignExtend);
-                            res.push(OpCode::IDiv(Location::rcx()));
+                            res.push(OpCode::IDiv(Location::r10()));
                             res.push(OpCode::Mov(Location::rdx(), Location::rax()));
                         }
                         AssignmentOp::SLAssign => {
-                            res.push(OpCode::Mov(Location::rax(), Location::rcx()));
+                            res.push(OpCode::Mov(Location::rax(), Location::r10()));
                             res.push(OpCode::Mov(loc.clone(), Location::rax()));
-                            res.push(OpCode::ShiftLeft(
-                                Location {
-                                    name: "%cl".to_string(),
-                                    size: LocationSize::Byte,
-                                },
-                                Location::rax(),
-                            ));
+                            res.push(OpCode::ShiftLeft(Location::r10l(), Location::rax()));
                         }
                         AssignmentOp::SRAssign => {
-                            res.push(OpCode::Mov(Location::rax(), Location::rcx()));
+                            res.push(OpCode::Mov(Location::rax(), Location::r10()));
                             res.push(OpCode::Mov(loc.clone(), Location::rax()));
-                            res.push(OpCode::ShiftRight(
-                                Location {
-                                    name: "%cl".to_string(),
-                                    size: LocationSize::Byte,
-                                },
-                                Location::rax(),
-                            ));
+                            res.push(OpCode::ShiftRight(Location::r10l(), Location::rax()));
                         }
                         AssignmentOp::BAndAssign => {
-                            res.push(OpCode::Mov(loc.clone(), Location::rcx()));
-                            res.push(OpCode::And(Location::rcx(), Location::rax()));
+                            res.push(OpCode::Mov(loc.clone(), Location::r10()));
+                            res.push(OpCode::And(Location::r10(), Location::rax()));
                         }
                         AssignmentOp::BXorAssign => {
-                            res.push(OpCode::Mov(loc.clone(), Location::rcx()));
-                            res.push(OpCode::Xor(Location::rcx(), Location::rax()));
+                            res.push(OpCode::Mov(loc.clone(), Location::r10()));
+                            res.push(OpCode::Xor(Location::r10(), Location::rax()));
                         }
                         AssignmentOp::BOrAssign => {
-                            res.push(OpCode::Mov(loc.clone(), Location::rcx()));
-                            res.push(OpCode::Or(Location::rcx(), Location::rax()));
+                            res.push(OpCode::Mov(loc.clone(), Location::r10()));
+                            res.push(OpCode::Or(Location::r10(), Location::rax()));
                         }
                     }
 
@@ -859,18 +860,15 @@ impl ToAssembly for LogOrExpr {
             res.push(OpCode::CompareImmediate(0, Location::rax()));
             res.push(OpCode::Jump(JumpCondition::Equal, clause_label.clone()));
             res.push(OpCode::MovImmediate(1, Location::rax()));
-            res.push(OpCode::Jump(JumpCondition::Unconditional, end_label.clone()));
+            res.push(OpCode::Jump(
+                JumpCondition::Unconditional,
+                end_label.clone(),
+            ));
             res.push(OpCode::Label(clause_label));
             res.push_asm(&lae.to_assembly(ctx)?);
             res.push(OpCode::CompareImmediate(0, Location::rax()));
             res.push(OpCode::MovImmediate(0, Location::rax()));
-            res.push(OpCode::Set(
-                SetCondition::NotEqual,
-                Location {
-                    name: "%al".to_string(),
-                    size: LocationSize::Byte,
-                },
-            ));
+            res.push(OpCode::Set(SetCondition::NotEqual, Location::al()));
             res.push(OpCode::Label(end_label));
         }
         Ok(res)
@@ -887,11 +885,7 @@ impl ToAssembly for LogOrExpr {
     fn evaluate(&self) -> Result<i32, String> {
         let mut res = self.log_and_expr.evaluate()?;
         for lae in &self.log_and_exprs {
-            res = if (res != 0) || (lae.evaluate()? != 0) {
-                1
-            } else {
-                0
-            };
+            res = i32::from((res != 0) || (lae.evaluate()? != 0));
         }
         Ok(res)
     }
@@ -905,18 +899,15 @@ impl ToAssembly for LogAndExpr {
             let end_label = get_label();
             res.push(OpCode::CompareImmediate(0, Location::rax()));
             res.push(OpCode::Jump(JumpCondition::NotEqual, clause_label.clone()));
-            res.push(OpCode::Jump(JumpCondition::Unconditional, end_label.clone()));
+            res.push(OpCode::Jump(
+                JumpCondition::Unconditional,
+                end_label.clone(),
+            ));
             res.push(OpCode::Label(clause_label));
             res.push_asm(&boe.to_assembly(ctx)?);
             res.push(OpCode::CompareImmediate(0, Location::rax()));
             res.push(OpCode::MovImmediate(0, Location::rax()));
-            res.push(OpCode::Set(
-                SetCondition::NotEqual,
-                Location {
-                    name: "%al".to_string(),
-                    size: LocationSize::Byte,
-                },
-            ));
+            res.push(OpCode::Set(SetCondition::NotEqual, Location::al()));
             res.push(OpCode::Label(end_label));
         }
         Ok(res)
@@ -933,11 +924,7 @@ impl ToAssembly for LogAndExpr {
     fn evaluate(&self) -> Result<i32, String> {
         let mut res = self.bit_or_expr.evaluate()?;
         for boe in &self.bit_or_exprs {
-            res = if (res != 0) && (boe.evaluate()? != 0) {
-                1
-            } else {
-                0
-            };
+            res = i32::from((res != 0) && (boe.evaluate()? != 0));
         }
         Ok(res)
     }
@@ -949,8 +936,8 @@ impl ToAssembly for BitOrExpr {
         for bxe in &self.bit_xor_exprs {
             res.push(OpCode::Push(Location::rax()));
             res.push_asm(&bxe.to_assembly(ctx)?);
-            res.push(OpCode::Pop(Location::rcx()));
-            res.push(OpCode::Or(Location::rcx(), Location::rax()));
+            res.push(OpCode::Pop(Location::r10()));
+            res.push(OpCode::Or(Location::r10(), Location::rax()));
         }
         Ok(res)
     }
@@ -978,8 +965,8 @@ impl ToAssembly for BitXorExpr {
         for bae in &self.bit_and_exprs {
             res.push(OpCode::Push(Location::rax()));
             res.push_asm(&bae.to_assembly(ctx)?);
-            res.push(OpCode::Pop(Location::rcx()));
-            res.push(OpCode::Xor(Location::rcx(), Location::rax()));
+            res.push(OpCode::Pop(Location::r10()));
+            res.push(OpCode::Xor(Location::r10(), Location::rax()));
         }
         Ok(res)
     }
@@ -1007,8 +994,8 @@ impl ToAssembly for BitAndExpr {
         for ee in &self.eq_exprs {
             res.push(OpCode::Push(Location::rax()));
             res.push_asm(&ee.to_assembly(ctx)?);
-            res.push(OpCode::Pop(Location::rcx()));
-            res.push(OpCode::And(Location::rcx(), Location::rax()));
+            res.push(OpCode::Pop(Location::r10()));
+            res.push(OpCode::And(Location::r10(), Location::rax()));
         }
         Ok(res)
     }
@@ -1041,16 +1028,10 @@ impl ToAssembly for EqExpr {
         for (ro, re) in &self.rel_exprs {
             res.push(OpCode::Push(Location::rax()));
             res.push_asm(&re.to_assembly(ctx)?);
-            res.push(OpCode::Pop(Location::rcx()));
-            res.push(OpCode::Compare(Location::rax(), Location::rcx()));
+            res.push(OpCode::Pop(Location::r10()));
+            res.push(OpCode::Compare(Location::rax(), Location::r10()));
             res.push(OpCode::MovImmediate(0, Location::rax()));
-            res.push(OpCode::Set(
-                ro.into(),
-                Location {
-                    name: "%al".to_string(),
-                    size: LocationSize::Byte,
-                },
-            ));
+            res.push(OpCode::Set(ro.clone().into(), Location::al()));
         }
         Ok(res)
     }
@@ -1067,20 +1048,8 @@ impl ToAssembly for EqExpr {
         let mut res = self.rel_expr.evaluate()?;
         for (eo, re) in &self.rel_exprs {
             res = match eo {
-                EqOp::IsEqual => {
-                    if re.evaluate()? == res {
-                        1
-                    } else {
-                        0
-                    }
-                }
-                EqOp::NotEqual => {
-                    if re.evaluate()? != res {
-                        1
-                    } else {
-                        0
-                    }
-                }
+                EqOp::IsEqual => i32::from(re.evaluate()? == res),
+                EqOp::NotEqual => i32::from(re.evaluate()? != res),
             };
         }
         Ok(res)
@@ -1088,10 +1057,10 @@ impl ToAssembly for EqExpr {
 }
 
 gen_into!(RelOp -> SetCondition: [
-    LT => LessThan,
-    LTE => LessThanOrEqual,
-    GT => GreaterThan,
-    GTE => GreaterThanOrEqual,
+    Lt => LessThan,
+    Lte => LessThanOrEqual,
+    Gt => GreaterThan,
+    Gte => GreaterThanOrEqual,
 ]);
 
 impl ToAssembly for RelExpr {
@@ -1100,16 +1069,10 @@ impl ToAssembly for RelExpr {
         for (ro, se) in &self.shift_exprs {
             res.push(OpCode::Push(Location::rax()));
             res.push_asm(&se.to_assembly(ctx)?);
-            res.push(OpCode::Pop(Location::rcx()));
-            res.push(OpCode::Compare(Location::rax(), Location::rcx()));
+            res.push(OpCode::Pop(Location::r10()));
+            res.push(OpCode::Compare(Location::rax(), Location::r10()));
             res.push(OpCode::MovImmediate(0, Location::rax()));
-            res.push(OpCode::Set(
-                ro.into(),
-                Location {
-                    name: "%al".to_string(),
-                    size: LocationSize::Byte,
-                },
-            ));
+            res.push(OpCode::Set(ro.clone().into(), Location::al()));
         }
         Ok(res)
     }
@@ -1126,34 +1089,10 @@ impl ToAssembly for RelExpr {
         let mut res = self.shift_expr.evaluate()?;
         for (ro, se) in &self.shift_exprs {
             res = match ro {
-                RelOp::LT => {
-                    if res < se.evaluate()? {
-                        1
-                    } else {
-                        0
-                    }
-                }
-                RelOp::LTE => {
-                    if res <= se.evaluate()? {
-                        1
-                    } else {
-                        0
-                    }
-                }
-                RelOp::GT => {
-                    if res > se.evaluate()? {
-                        1
-                    } else {
-                        0
-                    }
-                }
-                RelOp::GTE => {
-                    if res >= se.evaluate()? {
-                        1
-                    } else {
-                        0
-                    }
-                }
+                RelOp::Lt => i32::from(res < se.evaluate()?),
+                RelOp::Lte => i32::from(res <= se.evaluate()?),
+                RelOp::Gt => i32::from(res > se.evaluate()?),
+                RelOp::Gte => i32::from(res >= se.evaluate()?),
             };
         }
         Ok(res)
@@ -1166,26 +1105,14 @@ impl ToAssembly for ShiftExpr {
         for (so, ae) in &self.add_exprs {
             res.push(OpCode::Push(Location::rax()));
             res.push_asm(&ae.to_assembly(ctx)?);
-            res.push(OpCode::Mov(Location::rax(), Location::rcx()));
+            res.push(OpCode::Mov(Location::rax(), Location::r10()));
             res.push(OpCode::Pop(Location::rax()));
             match so {
                 ShiftOp::Left => {
-                    res.push(OpCode::ShiftLeft(
-                        Location {
-                            name: "%cl".to_string(),
-                            size: LocationSize::Byte,
-                        },
-                        Location::rax(),
-                    ));
+                    res.push(OpCode::ShiftLeft(Location::r10l(), Location::rax()));
                 }
                 ShiftOp::Right => {
-                    res.push(OpCode::ShiftRight(
-                        Location {
-                            name: "%cl".to_string(),
-                            size: LocationSize::Byte,
-                        },
-                        Location::rax(),
-                    ));
+                    res.push(OpCode::ShiftRight(Location::r10l(), Location::rax()));
                 }
             }
         }
@@ -1220,13 +1147,13 @@ impl ToAssembly for AddExpr {
             res.push_asm(&term.1.to_assembly(ctx)?);
             match term.0 {
                 BinaryOp::Addition => {
-                    res.push(OpCode::Pop(Location::rcx()));
-                    res.push(OpCode::Add(Location::rcx(), Location::rax()));
+                    res.push(OpCode::Pop(Location::r10()));
+                    res.push(OpCode::Add(Location::r10(), Location::rax()));
                 }
                 BinaryOp::Subtraction => {
-                    res.push(OpCode::Mov(Location::rax(), Location::rcx()));
+                    res.push(OpCode::Mov(Location::rax(), Location::r10()));
                     res.push(OpCode::Pop(Location::rax()));
-                    res.push(OpCode::Sub(Location::rcx(), Location::rax()));
+                    res.push(OpCode::Sub(Location::r10(), Location::rax()));
                 }
                 _ => unreachable!(),
             }
@@ -1263,20 +1190,20 @@ impl ToAssembly for Term {
             res.push_asm(&factor.1.to_assembly(ctx)?);
             match factor.0 {
                 BinaryOp::Multiply => {
-                    res.push(OpCode::Pop(Location::rcx()));
-                    res.push(OpCode::Mult(Location::rcx(), Location::rax()));
+                    res.push(OpCode::Pop(Location::r10()));
+                    res.push(OpCode::Mult(Location::r10(), Location::rax()));
                 }
                 BinaryOp::Divide => {
-                    res.push(OpCode::Mov(Location::rax(), Location::rcx()));
+                    res.push(OpCode::Mov(Location::rax(), Location::r10()));
                     res.push(OpCode::SignExtend);
                     res.push(OpCode::Pop(Location::rax()));
-                    res.push(OpCode::IDiv(Location::rcx()));
+                    res.push(OpCode::IDiv(Location::r10()));
                 }
                 BinaryOp::Modulo => {
-                    res.push(OpCode::Mov(Location::rax(), Location::rcx()));
+                    res.push(OpCode::Mov(Location::rax(), Location::r10()));
                     res.push(OpCode::SignExtend);
                     res.push(OpCode::Pop(Location::rax()));
-                    res.push(OpCode::IDiv(Location::rcx()));
+                    res.push(OpCode::IDiv(Location::r10()));
                     res.push(OpCode::Mov(Location::rdx(), Location::rax()));
                 }
                 _ => unreachable!(),
@@ -1319,13 +1246,7 @@ impl ToAssembly for Factor {
                     UnaryOp::Not => {
                         res.push(OpCode::CompareImmediate(0, Location::rax()));
                         res.push(OpCode::MovImmediate(0, Location::rax()));
-                        res.push(OpCode::Set(
-                            SetCondition::Equal,
-                            Location {
-                                name: "%al".to_string(),
-                                size: LocationSize::Byte,
-                            },
-                        ));
+                        res.push(OpCode::Set(SetCondition::Equal, Location::al()));
                     }
                 }
                 Ok(res)
@@ -1362,50 +1283,36 @@ impl ToAssembly for Factor {
                         ))
                     } else {
                         let mut res = Assembly::new();
-                        match func.2 {
-                            CallingConv::Cdecl => {
-                                for arg in args.iter().rev() {
-                                    res.push_asm(&arg.to_assembly(ctx)?);
-                                    res.push(OpCode::Push(Location::rax()));
-                                }
-                                res.push(OpCode::Call(id.clone()));
-                                if args.len() != 0 {
-                                    res.push(OpCode::AddImmediate(
-                                        8 * args.len() as i32,
-                                        Location::rsp(),
-                                    ));
-                                }
+
+                        let locations = vec![
+                            Location::rcx(),
+                            Location::rdx(),
+                            Location::r8(),
+                            Location::r9(),
+                        ];
+                        for (arg, loc) in args.iter().take(locations.len()).zip(&locations) {
+                            res.push_asm(&arg.to_assembly(ctx)?);
+                            res.push(OpCode::Mov(Location::rax(), loc.clone()));
+                        }
+                        if args.len() > locations.len() {
+                            for arg in args.iter().skip(locations.len()).rev() {
+                                res.push_asm(&arg.to_assembly(ctx)?);
+                                res.push(OpCode::Push(Location::rax()));
                             }
-                            CallingConv::Syscall => {
-                                if args.len() > 3 {
-                                    return Err("[Code Generation]: __syscall calls with more than 3 arguments are not supported".to_string());
-                                }
-                                if let Some(arg1) = args.get(0) {
-                                    res.push_asm(&arg1.to_assembly(ctx)?);
-                                    res.push(OpCode::Mov(
-                                        Location::rax(),
-                                        Location {
-                                            name: "%rdi".to_string(),
-                                            size: LocationSize::Qword,
-                                        },
-                                    ));
-                                    if let Some(arg2) = args.get(1) {
-                                        res.push_asm(&arg2.to_assembly(ctx)?);
-                                        res.push(OpCode::Mov(
-                                            Location::rax(),
-                                            Location {
-                                                name: "%rsi".to_string(),
-                                                size: LocationSize::Qword,
-                                            },
-                                        ));
-                                        if let Some(arg3) = args.get(2) {
-                                            res.push_asm(&arg3.to_assembly(ctx)?);
-                                            res.push(OpCode::Mov(Location::rax(), Location::rdx()));
-                                        }
-                                    }
-                                }
-                                res.push(OpCode::Call(id.clone()));
-                            }
+                        }
+
+                        // Shadow space
+                        res.push(OpCode::SubImmediate(0x28, Location::rsp()));
+
+                        res.push(OpCode::Call(id.clone()));
+
+                        // Remove shadow space
+                        res.push(OpCode::AddImmediate(0x28, Location::rsp()));
+                        if args.len() > locations.len() {
+                            res.push(OpCode::AddImmediate(
+                                8 * (args.len() - locations.len()) as i32,
+                                Location::rsp(),
+                            ));
                         }
 
                         Ok(res)
@@ -1438,26 +1345,8 @@ impl ToAssembly for Factor {
                             id
                         ))
                     } else {
-                        match func.2 {
-                            CallingConv::Cdecl => {
-                                for arg in args.iter().rev() {
-                                    arg.check(ctx)?;
-                                }
-                            }
-                            CallingConv::Syscall => {
-                                if args.len() > 3 {
-                                    return Err("[Code Generation]: __syscall calls with more than 3 arguments are not supported".to_string());
-                                }
-                                if let Some(arg1) = args.get(0) {
-                                    arg1.check(ctx)?;
-                                    if let Some(arg2) = args.get(1) {
-                                        arg2.check(ctx)?;
-                                        if let Some(arg3) = args.get(2) {
-                                            arg3.check(ctx)?;
-                                        }
-                                    }
-                                }
-                            }
+                        for arg in args.iter().rev() {
+                            arg.check(ctx)?;
                         }
 
                         Ok(())
@@ -1475,11 +1364,7 @@ impl ToAssembly for Factor {
             Factor::UnaryOp(uo, factor) => match uo {
                 UnaryOp::Negation => Ok(-factor.borrow().evaluate()?),
                 UnaryOp::Complement => Ok(!factor.borrow().evaluate()?),
-                UnaryOp::Not => Ok(if factor.borrow().evaluate()? == 0 {
-                    1
-                } else {
-                    0
-                }),
+                UnaryOp::Not => Ok(i32::from(factor.borrow().evaluate()? == 0)),
             },
             Factor::Constant(i) => Ok(*i as i32),
             Factor::Identifier(postfix_id) => postfix_id.evaluate(),

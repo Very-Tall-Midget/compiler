@@ -1,5 +1,6 @@
 /target
-test.sh
-out
-example
-assembly.s
+test.bat
+*.asm
+*.obj
+*.exe
+Cargo.lock

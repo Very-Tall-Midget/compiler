@@ -4,11 +4,8 @@ use lexer::*;
 mod ast;
 use ast::*;
 
-// mod generate;
-// use generate::*;
-
-mod generate_llvm;
-use generate_llvm::*;
+mod generate;
+use generate::*;
 
 mod assembly;
 
@@ -45,25 +42,38 @@ fn cli() -> clap::Command<'static> {
 
 fn write_assembly(asm: String, file: String) {
     fs::File::create(&file)
-        .expect(&format!("Failed to create file '{}'", file))
+        .unwrap_or_else(|_| panic!("Failed to create file '{}'", file))
         .write_all(asm.as_bytes())
-        .expect(&format!("Failed to write to file '{}'", file));
+        .unwrap_or_else(|_| panic!("Failed to write to file '{}'", file));
 }
 
 fn compile_assembly(out: String) -> Result<(), String> {
-    let res = std::process::Command::new("gcc")
-        .arg("assembly.s")
-        .arg("-o")
-        .arg(out)
-        .output()
-        .expect("Failed to call gcc");
-    if !res.status.success() {
-        Err(format!(
-            "gcc error: {}",
-            String::from_utf8(res.stderr).unwrap()
-        ))
-    } else {
+    if std::process::Command::new("cmd")
+        .args([
+            "/c",
+            "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Auxiliary\\Build\\vcvars64.bat",
+            "&&",
+            "nasm",
+            "-fwin64",
+            "-o",
+            "out.obj",
+            "assembly.asm",
+            "&&",
+            "link",
+            "/subsystem:console",
+            "/entry:_start",
+            &format!("/out:{}", out),
+            "out.obj",
+            "kernel32.lib",
+        ])
+        .spawn()
+        .map_err(|e| e.to_string())?
+        .wait()
+        .map_err(|e| e.to_string())?.success() {
+        let _ = std::fs::remove_file("out.obj");
         Ok(())
+    } else {
+        Err("Failed to assemble and link".to_string())
     }
 }
 
@@ -90,9 +100,9 @@ fn main() -> Result<(), String> {
             if args.contains_id("assembly") {
                 write_assembly(asm, out.clone());
             } else {
-                write_assembly(asm, "assembly.s".to_string());
+                write_assembly(asm, "assembly.asm".to_string());
                 compile_assembly(out.clone())?;
-                fs::remove_file("assembly.s").unwrap();
+                fs::remove_file("assembly.asm").unwrap();
             }
 
             println!("Successfully compiled to '{}'", out);
