@@ -8,8 +8,14 @@ int power(int base, int exp)
     return res;
 }
 
-int e = 4, n = 2;
+int factorial(int n)
+{
+    if (n <= 1)
+        return 1;
+    return n * factorial(n - 1);
+}
+
 int main()
 {
-    return power(n, e);
+    return factorial(9) + power(2, 10);
 }

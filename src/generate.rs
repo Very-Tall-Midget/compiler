@@ -266,6 +266,26 @@ impl ToAssembly for Function {
         let mut res = Assembly::new();
         res.push(OpCode::StartFunction(self.name.clone()));
         res.push(OpCode::PreserveStack);
+
+        // Move reg args to shadow space on stack so future function calls don't overwrite them
+        let location_to_stack = vec![
+            (Location::rcx(), "[rbp+24]"),
+            (Location::rdx(), "[rbp+32]"),
+            (Location::r8(), "[rbp+40]"),
+            (Location::r9(), "[rbp+48]"),
+        ];
+        for (i, (reg, stack)) in location_to_stack.iter().enumerate().take(self.params.len()) {
+            ctx.var_map
+                .insert(self.params[i].clone(), stack.to_string());
+            res.push(OpCode::Mov(
+                reg.clone(),
+                Location {
+                    name: stack.to_string(),
+                    size: LocationSize::Qword,
+                },
+            ));
+        }
+
         ctx.stack_index = -8;
         res.push_asm(
             &self
